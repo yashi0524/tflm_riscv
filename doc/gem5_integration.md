@@ -642,6 +642,73 @@ Nothing was deleted: `tensorflow/lite/micro/testing/test_with_gem5.sh` and
 any Makefile target now. `riscv64_baremetal` (gem5 FS mode + whisper) is
 untouched by this change.
 
+## Per-op cycle counts on `riscv64_baremetal`: the two gaps that made every op read "0 ticks"
+
+Wanted real per-layer cycle counts for `dtln_noise_suppression.tflite`.
+Two independent gaps, both needed fixing:
+
+1. **`dtln_test.cc` never wires a profiler.** `MicroInterpreter`'s
+   constructor takes an optional `MicroProfilerInterface* profiler =
+   nullptr`; `dtln_test.cc` doesn't pass one, so every op's
+   `ScopedMicroProfiler` (in `micro_interpreter_graph.cc`, wrapping every
+   `registration->invoke()` call) is constructed with a null profiler
+   pointer and no-ops entirely — zero profiling events, regardless of
+   simulator. Worked around without touching `dtln_test.cc` at all: ran the
+   model through `run_tflm_benchmark` instead
+   (`GENERIC_BENCHMARK_MODEL_PATH=.../dtln_noise_suppression.tflite`) — that
+   harness already constructs a real `MicroProfiler` and passes it in (the
+   same mechanism that produced the `person_detect` per-op table earlier).
+   `run_tflm_benchmark`'s wall-clock cost tracks the model's actual compute,
+   not the harness itself — `dtln`'s single FC + 2×LSTM calls finished in
+   single-digit seconds under gem5, nothing like `person_detect`'s 7–9
+   minutes.
+2. **The clock source was hardcoded to 0.** `tensorflow/lite/micro/micro_time.cc`'s
+   reference implementation (used by every target without its own override)
+   returns `0` from both `ticks_per_second()` and `GetCurrentTimeTicks()` —
+   exactly why `person_detect`'s per-op table earlier always printed
+   `0 ticks (0 ms)` even with a profiler wired. Fixed by adding
+   `tensorflow/lite/micro/riscv64_baremetal/micro_time.cc`, reading the
+   `mcycle` CSR (M-mode cycle counter, 0xB00) via inline `csrr`.
+
+`mcycle`, not `cycle`/`rdcycle`: first attempt used the `rdcycle`
+pseudo-instruction (targets the *unprivileged* shadow CSR `cycle`, 0xC00).
+Worked under gem5, but whisper trapped it as illegal
+(`mcause=0x2`, `mtval=0xc0002573` — decodes to exactly this `csrrs`
+encoding) unless the ISA string explicitly declares `Zicntr`, which
+`sim_config/whisper_rv64gcv_config.json` doesn't. Rather than patch that
+shared config (used identically by the sibling `gemm` project, per
+instruction to keep them matching), switched to reading `mcycle` directly —
+this crt0 runs entirely in M-mode, where `mcycle` is always accessible
+regardless of declared ISA extensions, and it's exactly what `gemm`'s own
+kernels (`src/gemm.c`, `src/dgemm.c`, etc.) already do for the same reason.
+
+Result, `dtln_noise_suppression.tflite` via `run_tflm_benchmark`
+(`GENERIC_BENCHMARK_ARENA_SIZE=16384`, matching `dtln_test.cc`'s own arena
+size):
+
+| Op | gem5 cycles | whisper cycles |
+|---|---|---|
+| `UNIDIRECTIONAL_SEQUENCE_LSTM` (1st call) | 2,685,618 | 2,479,287 |
+| `UNIDIRECTIONAL_SEQUENCE_LSTM` (2nd call) | 1,845,791 | 1,688,145 |
+| `FULLY_CONNECTED` | 378,379 | 311,697 |
+| `LOGISTIC` | 89,537 | 88,405 |
+| **Total (profiled ops only)** | **4,999,325** | **4,567,534** |
+
+Output CRC32 (`0x7E578D1C`) identical between simulators — same computation,
+just different cycle counts, as expected: gem5's `RiscvMinorCPU` models
+real pipeline stalls/hazards; whisper is a functional simulator with no
+timing model of its own, so its per-instruction cycle attribution is closer
+to an idealized IPC assumption. Don't treat whisper's numbers as
+cycle-accurate — gem5's are the trustworthy ones for actual performance
+comparisons; whisper's are useful for fast *relative* op-to-op comparison
+and quick iteration, not absolute cycle counts.
+
+The LSTM dominates by a wide margin (4.17–4.53M of ~4.57–5.0M total profiled
+cycles, i.e. ~91% either way) — the `FULLY_CONNECTED` layer this benchmark
+target was originally picked for is comparatively cheap. Worth keeping in
+mind if/when comparing a vectorized `FULLY_CONNECTED` kernel against this
+baseline: the LSTM, not the FC layer, is this model's actual bottleneck.
+
 ## Known limitations / follow-ups not yet done
 
 - `keyword_benchmark` and `person_detection_benchmark` (the two dedicated
@@ -649,8 +716,16 @@ untouched by this change.
   to the generic `tflm_benchmark`) haven't been tried on `riscv{32,64}_generic`
   under `qemu` (the only supported simulator there now — see "gem5 SE mode
   disabled" above).
-- Per-op timing breakdowns are unusable on these targets (see above) —
-  only whole-run gem5 tick counts are meaningful right now.
+- Per-op timing breakdowns are now real on `riscv64_baremetal` (see the
+  `micro_time.cc`/`mcycle` section above) — for `riscv32_generic`/
+  `riscv64_generic`, still unusable; those targets have no `micro_time.cc`
+  override of their own, so `GetCurrentTimeTicks()` still always returns 0
+  there. Same fix (an `mcycle`-reading `micro_time.cc`) would apply if
+  needed, just not done for those targets yet.
+- `person_detect.tflite` hasn't been re-run through `run_tflm_benchmark` to
+  get its own per-op cycle breakdown yet (deliberately skipped for now,
+  given its ~7–9 minute gem5 wall-clock cost) — only `dtln_noise_suppression`
+  has real per-op numbers so far.
 - `TARGET_TOOLCHAIN_ROOT`/`TARGET_TOOLCHAIN_PREFIX` must be overridden by
   hand on every invocation, since the upstream default toolchain doesn't
   run on this (aarch64) host at all. Could be made the target's own default

@@ -5,9 +5,13 @@ simulator integrations. For the *why* behind each target/fix, see
 [`gem5_integration.md`](gem5_integration.md) — this file is just the
 numbers, kept as a single scannable reference.
 
-**Caveat that applies to every row below:** TFLM's per-op software timing
-instrumentation isn't wired up on any of these targets — every op always
-prints `0 ticks (0 ms)` regardless of target/simulator. The only
+**Caveat that applies to every row below except the per-op table further
+down:** TFLM's per-op software timing instrumentation isn't wired up by
+default — every op prints `0 ticks (0 ms)` unless both (a) a profiler is
+explicitly passed into `MicroInterpreter` (only `run_tflm_benchmark` does
+this; `hello_world_test`/`dtln_test`/etc. don't) and (b) the target has its
+own `micro_time.cc` reading a real cycle counter (only `riscv64_baremetal`
+has one, added specifically for this). Where neither holds, the only
 trustworthy timing figures are the simulator's own whole-run counters:
 gem5's `tick` count (cycle-accurate, `RiscvMinorCPU`) or whisper's
 instruction count (functional-only, no timing model — **not**
@@ -57,6 +61,36 @@ actually uses — `riscv64_baremetal` still compiles `rv64imc_zicsr` (no
 will read 0 for every run above; it's a placeholder for future
 vectorized-kernel comparisons, not a current data source.
 
+## Per-op cycle counts: `dtln_noise_suppression.tflite` on `riscv64_baremetal`
+
+Real per-op profiling, not `0 ticks` — see "Per-op cycle counts on
+`riscv64_baremetal`" in [`gem5_integration.md`](gem5_integration.md) for
+how (`micro_time.cc` reading `mcycle`, plus running via
+`run_tflm_benchmark` instead of `dtln_test` directly, since only the
+former wires a `MicroProfiler`). `GENERIC_BENCHMARK_ARENA_SIZE=16384`.
+
+| Op | gem5 cycles | whisper cycles |
+|---|---|---|
+| `UNIDIRECTIONAL_SEQUENCE_LSTM` (1st call) | 2,685,618 | 2,479,287 |
+| `UNIDIRECTIONAL_SEQUENCE_LSTM` (2nd call) | 1,845,791 | 1,688,145 |
+| `FULLY_CONNECTED` | 378,379 | 311,697 |
+| `LOGISTIC` | 89,537 | 88,405 |
+| **Total (profiled ops only)** | **4,999,325** | **4,567,534** |
+
+Output CRC32 (`0x7E578D1C`) identical between simulators. gem5's numbers
+are the trustworthy ones for actual performance comparison (models real
+pipeline stalls); whisper's are close but not cycle-accurate (functional
+simulator, closer to an idealized-IPC assumption) — good for fast relative
+comparison, not absolute numbers.
+
+**The LSTM, not the `FULLY_CONNECTED` layer, dominates** — ~91% of total
+profiled cycles either way. Relevant if/when comparing a vectorized
+`FULLY_CONNECTED` kernel against this baseline: the FC layer alone is a
+small fraction of this model's total cost.
+
+`person_detect.tflite` hasn't been run through this same per-op profiling
+path yet — deliberately skipped given its ~7–9 minute gem5 wall-clock cost.
+
 ## Benchmark candidate comparison (FC/Conv layer shapes)
 
 Pulled directly from each model's flatbuffer via the vendored
@@ -92,9 +126,14 @@ make -f tensorflow/lite/micro/tools/make/Makefile TARGET=riscv64_generic $TOOLCH
 make -f tensorflow/lite/micro/tools/make/Makefile TARGET=riscv64_baremetal $TOOLCHAIN_ARGS test_dtln_test
 make -f tensorflow/lite/micro/tools/make/Makefile TARGET=riscv64_baremetal SIMULATOR=whisper $TOOLCHAIN_ARGS test_dtln_test
 
-# Generic benchmark harness with a chosen model:
+# Generic benchmark harness, with real per-op cycle counts (gem5 shown; add
+# SIMULATOR=whisper for the fast functional-only path):
 make -f tensorflow/lite/micro/tools/make/Makefile TARGET=riscv64_baremetal $TOOLCHAIN_ARGS \
   BUILD_TYPE=default run_tflm_benchmark \
-  GENERIC_BENCHMARK_MODEL_PATH=tensorflow/lite/micro/models/person_detect.tflite \
-  GENERIC_BENCHMARK_ARENA_SIZE=153600
+  GENERIC_BENCHMARK_MODEL_PATH=tensorflow/lite/micro/examples/dtln/dtln_noise_suppression.tflite \
+  GENERIC_BENCHMARK_ARENA_SIZE=16384
+
+# person_detect.tflite works the same way, but budget ~7-9 min gem5 wall-clock:
+# GENERIC_BENCHMARK_MODEL_PATH=tensorflow/lite/micro/models/person_detect.tflite
+# GENERIC_BENCHMARK_ARENA_SIZE=153600
 ```
