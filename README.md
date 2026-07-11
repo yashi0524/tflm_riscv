@@ -21,7 +21,7 @@ addition to) QEMU, across three target/mode combinations:
   (`rv64gcv`-class ISA) even though no current TFLM build here compiles
   with it yet — ready for whenever a vectorized kernel build exists.
 
-See [`doc/gem5_integration.adoc`](doc/gem5_integration.adoc) for the full
+See [`doc/gem5_integration.md`](doc/gem5_integration.md) for the full
 writeup: design decisions, bugs found/fixed along the way (a newlib
 `.sdata`/`.sbss` linker-script bug that silently broke `printf`, an
 RWX-segment issue under `-Wl,--fatal-warnings`, FLASH/RAM sizing for
@@ -41,7 +41,8 @@ tflm_riscv/
 │                    TFLM source, they're simulator environment config
 ├── script/          local dev-environment setup (toolchain/gem5/whisper
 │                    paths — edit before use, see below)
-└── doc/             the full writeup (see above)
+└── doc/             gem5_integration.md (the full writeup, see above) +
+                     performance.md (consolidated numbers from every run)
 ```
 
 ## Setup
@@ -105,8 +106,10 @@ long as this repo's layout above is preserved, no extra configuration
 needed. Override any of these env vars to point elsewhere if you want a
 different board/simulator config.
 
-See `doc/gem5_integration.adoc` for the RV32 command form, `tflm_benchmark`
-usage, and everything else that's been verified.
+See `doc/gem5_integration.md` for the RV32 command form, `tflm_benchmark`
+usage, and everything else that's been verified. See
+`doc/performance.md` for a consolidated table of every measured
+run (gem5 tick counts, whisper instruction counts, arena sizes).
 
 ## Development / git workflow
 

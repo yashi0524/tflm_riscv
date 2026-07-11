@@ -1,9 +1,6 @@
-= TFLite Micro: gem5 Support for riscv32_generic / riscv64_generic
-:toc:
-:toclevels: 2
-:source-highlighter: rouge
+# TFLite Micro: gem5 Support for riscv32_generic / riscv64_generic
 
-== Overview
+## Overview
 
 This memo documents the changes made to add gem5 as an alternative to QEMU
 for running `tflite-micro` tests/benchmarks on RISC-V, plus the environment
@@ -17,54 +14,25 @@ https://github.com/tensorflow/tflite-micro). Per-environment config that
 shouldn't be added to that clone lives in `/home/ajno5/work/2_pattern/tflm/`
 instead (`sim_config/`, `script/`).
 
-== Environment blockers fixed first
+See [`performance.md`](performance.md) for a consolidated table of every
+measured run (gem5 tick counts, whisper instruction counts, arena sizes) —
+this file covers the *why*, that one has just the numbers.
+
+## Environment blockers fixed first
 
 None of these are specific to gem5 — they blocked the existing
 QEMU-based `make ... test_hello_world_test` flow too, and had to be
 resolved before any RISC-V target would build at all on this host.
 
-[cols="1,2,2"]
-|===
-|Symptom |Root cause |Fix
+| Symptom | Root cause | Fix |
+|---|---|---|
+| `ModuleNotFoundError: No module named 'numpy'` | System Python had no `numpy`; `pip3` wasn't installed either. | `sudo apt install python3-numpy` |
+| `ModuleNotFoundError: No module named 'PIL'` | Same, for Pillow. | `sudo apt install python3-pil` |
+| `unzip: command not found` while downloading the `ruy` third-party dep | `unzip` wasn't installed. | `sudo apt install unzip` |
+| Re-running after installing `unzip` still failed on a missing header (`fixedpoint/fixedpoint.h`) | `gemmlowp` and `ruy` had each been downloaded *before* `unzip` was available; the Makefile's download step created the target directory before failing, so on retry it saw the directory already existed and skipped re-downloading — leaving both directories present but empty. | `rmdir tensorflow/lite/micro/tools/make/downloads/{gemmlowp,ruy}`, then re-run so they get re-fetched properly. |
+| `riscv64-unknown-elf-g++: 1: ELF: not found` / `Syntax error: word unexpected` | The Makefile's default `RISCV_TOOLCHAIN_URL` (a 2018-era SiFive package) is an **x86_64** binary; this host is **aarch64** (`uname -m` → `aarch64`). The shell tried to `execve()` an incompatible-architecture ELF, which failed and fell through to interpreting the raw bytes as a shell script. | Override `TARGET_TOOLCHAIN_ROOT` / `TARGET_TOOLCHAIN_PREFIX` on the `make` command line to point at the aarch64-native toolchain already used for the sibling `gemm` project (`xpack-riscv-none-elf-gcc-13.2.0-2`, prefix `riscv-none-elf-` instead of the default `riscv64-unknown-elf-`). Confirmed this toolchain has `rv32imc`/`rv64imc` multilib support (`-imultilib rv32imc/ilp32` / `.../rv64imc/lp64` showed up in the actual `cc1plus` invocation). |
 
-|`ModuleNotFoundError: No module named 'numpy'`
-|System Python had no `numpy`; `pip3` wasn't installed either.
-|`sudo apt install python3-numpy`
-
-|`ModuleNotFoundError: No module named 'PIL'`
-|Same, for Pillow.
-|`sudo apt install python3-pil`
-
-|`unzip: command not found` while downloading the `ruy` third-party dep
-|`unzip` wasn't installed.
-|`sudo apt install unzip`
-
-|Re-running after installing `unzip` still failed on a missing header
-(`fixedpoint/fixedpoint.h`)
-|`gemmlowp` and `ruy` had each been downloaded *before* `unzip` was
-available; the Makefile's download step created the target directory before
-failing, so on retry it saw the directory already existed and skipped
-re-downloading — leaving both directories present but empty.
-|`rmdir tensorflow/lite/micro/tools/make/downloads/{gemmlowp,ruy}`, then
-re-run so they get re-fetched properly.
-
-|`riscv64-unknown-elf-g++: 1: ELF: not found` /
-`Syntax error: word unexpected`
-|The Makefile's default `RISCV_TOOLCHAIN_URL` (a 2018-era SiFive package) is
-an **x86_64** binary; this host is **aarch64**
-(`uname -m` → `aarch64`). The shell tried to `execve()` an
-incompatible-architecture ELF, which failed and fell through to
-interpreting the raw bytes as a shell script.
-|Override `TARGET_TOOLCHAIN_ROOT` / `TARGET_TOOLCHAIN_PREFIX` on the `make`
-command line to point at the aarch64-native toolchain already used for the
-sibling `gemm` project (`xpack-riscv-none-elf-gcc-13.2.0-2`, prefix
-`riscv-none-elf-` instead of the default `riscv64-unknown-elf-`). Confirmed
-this toolchain has `rv32imc`/`rv64imc` multilib support
-(`-imultilib rv32imc/ilp32` /  `.../rv64imc/lp64` showed up in the actual
-`cc1plus` invocation).
-|===
-
-== gem5 SE-mode design
+## gem5 SE-mode design
 
 The existing RISC-V targets run tests via **QEMU linux-user mode**
 (`qemu-riscv32`/`qemu-riscv64`), *not* full-system emulation: the toolchain
@@ -83,47 +51,46 @@ semihosting configs built earlier for the `gemm` project's RVV work, which
 solved a different problem (a custom linker script + semihosting console,
 because that toolchain/runtime target was genuinely bare-metal).
 
-=== Two non-obvious gem5 API requirements hit along the way
+### Two non-obvious gem5 API requirements hit along the way
 
-. **A CPU's `isa` must explicitly match the process's word size.**
-  gem5 auto-selects `RiscvProcess32`/`RiscvProcess64` from the ELF's
-  `EI_CLASS`, but separately `fatal_if(isa->rvType() != RV32/RV64, ...)`
-  checks the *CPU's* configured ISA against it — the two aren't
-  automatically kept in sync. Fix: `gem5_riscv_se.py` reads the ELF header's
-  `EI_CLASS` byte itself (offset 4: `1`→RV32, `2`→RV64) and sets
-  `RiscvISA(riscv_type=...)` to match, so one config file works for both
-  `riscv32_generic` and `riscv64_generic` without a manual flag that could
-  be set wrong.
-. **SE mode needs an explicit `SEWorkload`, separate from `cpu.workload`.**
-  First attempt (`system.cpu.workload = process` only) failed at
-  instantiation with:
-+
-[source]
-----
-fatal: fatal condition !seWorkload occurred: Couldn't find appropriate workload object.
-----
-+
-Fix: `system.workload = SEWorkload.init_compatible(binary_path)` — a
-factory that inspects the ELF and returns the right `SEWorkload` subclass
-(`RiscvEmuLinux` here). Found by reading gem5's own (deprecated but still
-functional) `configs/deprecated/example/se.py` reference script.
+1. **A CPU's `isa` must explicitly match the process's word size.**
+   gem5 auto-selects `RiscvProcess32`/`RiscvProcess64` from the ELF's
+   `EI_CLASS`, but separately `fatal_if(isa->rvType() != RV32/RV64, ...)`
+   checks the *CPU's* configured ISA against it — the two aren't
+   automatically kept in sync. Fix: `gem5_riscv_se.py` reads the ELF header's
+   `EI_CLASS` byte itself (offset 4: `1`→RV32, `2`→RV64) and sets
+   `RiscvISA(riscv_type=...)` to match, so one config file works for both
+   `riscv32_generic` and `riscv64_generic` without a manual flag that could
+   be set wrong.
+2. **SE mode needs an explicit `SEWorkload`, separate from `cpu.workload`.**
+   First attempt (`system.cpu.workload = process` only) failed at
+   instantiation with:
 
-== Files changed
+   ```
+   fatal: fatal condition !seWorkload occurred: Couldn't find appropriate workload object.
+   ```
 
-=== New, outside the tflite-micro clone (`/home/ajno5/work/2_pattern/tflm/sim_config/`)
+   Fix: `system.workload = SEWorkload.init_compatible(binary_path)` — a
+   factory that inspects the ELF and returns the right `SEWorkload` subclass
+   (`RiscvEmuLinux` here). Found by reading gem5's own (deprecated but still
+   functional) `configs/deprecated/example/se.py` reference script.
 
-`gem5_riscv_se.py`::
+## Files changed
+
+### New, outside the tflite-micro clone (`/home/ajno5/work/2_pattern/tflm/sim_config/`)
+
+**`gem5_riscv_se.py`**
 gem5 SE-mode board config. Auto-detects RV32 vs RV64 from the target ELF
 (see above); `--cpu={atomic,timing,minor}` selects the CPU model, default
 `minor` (`RiscvMinorCPU`, matching the `gemm` project's convention).
 `enable_rvv=False` always, since both `riscv{32,64}_generic` targets build
 for `*imc` (no vector extension).
-+
+
 Kept outside the repo deliberately (per instruction) since it's
 environment-specific (hardcodes this host's `gem5.opt`/paths), unlike the
 wrapper script below which is a portable, project-integrated file.
 
-`gem5_riscv_baremetal_fs.py`::
+**`gem5_riscv_baremetal_fs.py`**
 gem5 FS-mode board config for the `riscv64_baremetal` target (see the FS
 mode section further below) — `RiscvMinorCPU`, `RiscvBareMetal` workload,
 `RiscvSemihosting()`. Fixed single-CPU-model config, no `--cpu=` switch
@@ -132,9 +99,9 @@ different enough execution model that CPU-model flexibility wasn't worth
 the complexity here yet. Also kept outside the repo for the same reason as
 `gem5_riscv_se.py`.
 
-=== New, inside the tflite-micro clone (tracked)
+### New, inside the tflite-micro clone (tracked)
 
-`tensorflow/lite/micro/testing/test_with_gem5.sh`::
+**`tensorflow/lite/micro/testing/test_with_gem5.sh`**
 Drop-in alternative to `test_with_qemu.sh` — same argument shape
 (`arch-suffix cpu binary pass-string target-name`), same behavior (run,
 tee to a log, grep for the pass string, `exit 0`/`1`). Internally invokes
@@ -142,49 +109,48 @@ tee to a log, grep for the pass string, `exit 0`/`1`). Internally invokes
 `GEM5_BIN`/`GEM5_SE_CONFIG` env vars are overridable; the latter defaults
 to the path above.
 
-`tensorflow/lite/micro/riscv64_generic/debug_log.cc`::
+**`tensorflow/lite/micro/riscv64_generic/debug_log.cc`**
 Copy of `riscv32_generic`'s (XLEN-agnostic — just `vsnprintf_` + `fputs`).
 Needed because the Makefile's `specialize_files.py` step picks per-target
 overrides from `tensorflow/lite/micro/$(TARGET)/`, keyed on the `TARGET`
 name.
 
-`tensorflow/lite/micro/tools/make/targets/riscv64_generic_makefile.inc`::
+**`tensorflow/lite/micro/tools/make/targets/riscv64_generic_makefile.inc`**
 New target (did not exist upstream). Mirrors `riscv32_generic_makefile.inc`
 with `RISCV_ARCH := rv64imc`, `RISCV_ABI := lp64`; otherwise identical
 (same `SIMULATOR` switch, same `--specs=nano.specs`/`-mno-relax` flags,
 same excluded-tests list).
 
-`tensorflow/lite/micro/riscv64_baremetal/{start_semi.S,linker_semi.ld,debug_log.cc}`::
+**`tensorflow/lite/micro/riscv64_baremetal/{start_semi.S,linker_semi.ld,debug_log.cc}`**
 The bare-metal crt0, linker script, and `DebugLog()` override for the new
 `riscv64_baremetal` target — see the FS mode section below for the full
 story (`.sdata`/`.sbss` copy/zero fix, RWX-segment/`PHDRS` fix, `exit()`
 vs. `_exit()`, `putchar_` stub).
 
-`tensorflow/lite/micro/testing/test_with_gem5_fs.sh`::
+**`tensorflow/lite/micro/testing/test_with_gem5_fs.sh`**
 Counterpart to `test_with_gem5.sh` for FS mode — invokes
 `gem5_riscv_baremetal_fs.py` instead of the SE-mode config, no `--cpu=`
 flag (fixed `RiscvMinorCPU`). `GEM5_BIN`/`GEM5_FS_CONFIG` env vars
 overridable, same convention as the SE-mode script.
 
-`tensorflow/lite/micro/tools/make/targets/riscv64_baremetal_makefile.inc`::
+**`tensorflow/lite/micro/tools/make/targets/riscv64_baremetal_makefile.inc`**
 New target (did not exist upstream, and unlike `riscv{32,64}_generic` has
 no upstream SE/QEMU-mode analog to mirror). Full bare-metal FS-mode target:
 custom crt0 linked in via `MICROLITE_CC_SRCS +=`, custom linker script,
 `-nostartfiles -nostdlib` + explicit `-lc -lm -lgcc`, `test_with_gem5_fs.sh`
 as `TEST_SCRIPT`. See the dedicated section below for the full rationale.
 
-=== Modified
+### Modified
 
-`tensorflow/lite/micro/tools/make/targets/riscv32_generic_makefile.inc`::
+**`tensorflow/lite/micro/tools/make/targets/riscv32_generic_makefile.inc`**
 Added a `SIMULATOR ?= qemu` variable; `TEST_SCRIPT` now branches on it
 (`gem5` → `test_with_gem5.sh riscv32 minor`, anything else → the original
 `test_with_qemu.sh riscv32 rv32` unchanged). Default behavior is
 unaffected — existing QEMU-based CI/workflows keep working as before.
 
-== Verified working commands
+## Verified working commands
 
-[source,bash]
-----
+```bash
 source /home/ajno5/work/2_pattern/tflm/script/0_env_var_setup.sh   # puts gem5.opt on PATH
 cd /home/ajno5/work/2_pattern/tflm/tflite-micro
 
@@ -201,35 +167,28 @@ make -f tensorflow/lite/micro/tools/make/Makefile \
   TARGET_TOOLCHAIN_ROOT=$HOME/work/1_toolchain/xpack/xpack-riscv-none-elf-gcc-13.2.0-2/bin/ \
   TARGET_TOOLCHAIN_PREFIX=riscv-none-elf- \
   test_hello_world_test
-----
+```
 
 Both end in `~~~ALL TESTS PASSED~~~` / `Pass` / exit code 0.
 
 Sanity-check numbers (arena size scales with pointer width, as expected —
 not a bug):
 
-[cols="1,1"]
-|===
-|Target |`RecordingMicroAllocator` arena total
-
-|`riscv32_generic` (4-byte pointers)
-|1,376 bytes
-
-|`riscv64_generic` (8-byte pointers)
-|2,408 bytes
-|===
+| Target | `RecordingMicroAllocator` arena total |
+|---|---|
+| `riscv32_generic` (4-byte pointers) | 1,376 bytes |
+| `riscv64_generic` (8-byte pointers) | 2,408 bytes |
 
 Also still confirmed working, unaffected by any of the above: QEMU-based
 `SIMULATOR=qemu` (the default) for `riscv32_generic`, and the plain default
 (`linux`/`aarch64`) target's `test_hello_world_test`, `tflm_benchmark`, and
 `run_keyword_benchmark`.
 
-=== `run_tflm_benchmark` (generic model benchmark) on `riscv64_generic` + gem5
+### `run_tflm_benchmark` (generic model benchmark) on `riscv64_generic` + gem5
 
 Also verified, using the repo's built-in `person_detect.tflite` model:
 
-[source,bash]
-----
+```bash
 make -f tensorflow/lite/micro/tools/make/Makefile \
   TARGET=riscv64_generic SIMULATOR=gem5 \
   TARGET_TOOLCHAIN_ROOT=$HOME/work/1_toolchain/xpack/xpack-riscv-none-elf-gcc-13.2.0-2/bin/ \
@@ -237,7 +196,7 @@ make -f tensorflow/lite/micro/tools/make/Makefile \
   BUILD_TYPE=default run_tflm_benchmark \
   GENERIC_BENCHMARK_MODEL_PATH=tensorflow/lite/micro/models/person_detect.tflite \
   GENERIC_BENCHMARK_ARENA_SIZE=153600
-----
+```
 
 Ran clean — all 30 ops (13× `DEPTHWISE_CONV_2D`, 14× `CONV_2D`,
 `AVERAGE_POOL_2D`, `RESHAPE`, `SOFTMAX`) executed, arena usage
@@ -248,16 +207,16 @@ conv-based model vs. a single `FULLY_CONNECTED` op).
 
 Two caveats noticed, neither gem5-related:
 
-* Every per-op timing prints `0 ticks (0 ms)` — a pre-existing TFLM
+- Every per-op timing prints `0 ticks (0 ms)` — a pre-existing TFLM
   limitation: this target's software-side profiling clock isn't wired up
   for `riscv{32,64}_generic`. gem5's own tick count (`Exiting @ tick ...`)
   is the only trustworthy timing figure here.
-* `collect_meta_data.sh`'s metadata step logs
+- `collect_meta_data.sh`'s metadata step logs
   `/usr/bin/python3: No module named pip` and falls back to
   `Model analysis not available` — non-fatal, same `pip`-not-installed gap
   noted earlier in this session.
 
-== gem5 Full-System (FS) bare-metal mode: `hello_world_test`
+## gem5 Full-System (FS) bare-metal mode: `hello_world_test`
 
 Separate from SE mode above, this section covers running `hello_world_test`
 under gem5's **FS (full-system) mode** — booting an ELF directly at its
@@ -267,34 +226,32 @@ approach built for the sibling `gemm` project's RVV work
 (`/home/ajno5/work/2_pattern/gemm/{start_semi.S,linker_semi.ld}` and its FS
 gem5 config), adapted for TFLM.
 
-=== New files
+### New files
 
-`tensorflow/lite/micro/riscv64_baremetal/start_semi.S`::
+**`tensorflow/lite/micro/riscv64_baremetal/start_semi.S`**
 Copy of gemm's `start_semi.S` (crt0: stack/gp/`mtvec`/BSS-zero/`.data`-copy
 setup, then `call main`), with three changes for TFLM:
-+
---
-* Assembled with `-march=rv64imc_zicsr` — TFLM's plain `rv64imc` lacks the
+
+- Assembled with `-march=rv64imc_zicsr` — TFLM's plain `rv64imc` lacks the
   `zicsr` extension needed for the `csrw`/`csrr` instructions this crt0 uses
   (`mtvec`, `mstatus`, `mcause`, `mepc`, `mtval`).
-* `_start` now does `call main` then **`call exit`** (libc's real `exit()`,
+- `_start` now does `call main` then **`call exit`** (libc's real `exit()`,
   which flushes all open stdio streams via `_fwalk` before internally
   calling `_exit()`) instead of falling straight through into the raw
   `_exit` stub as gemm's copy does. Gemm's kernel happens to always end on a
   flushed line so the gap never mattered there; TFLM's test output isn't
   guaranteed to, so skipping `exit()` risked losing buffered output.
-* Added a `putchar_` stub (routes one byte through this file's own
+- Added a `putchar_` stub (routes one byte through this file's own
   `_write`). TFLM bundles the `eyalroz_printf` library; linking pulls in
   its `printf.o` whole, and that object also defines `putchar_wrapper`
   (backing `putchar()`/`puts()`, which TFLM doesn't actually call) that
   references an external `putchar_` — unresolved otherwise.
---
 
-`tensorflow/lite/micro/riscv64_baremetal/linker_semi.ld`::
+**`tensorflow/lite/micro/riscv64_baremetal/linker_semi.ld`**
 Copy of gemm's linker script, with one **correctness fix** (see below) —
 not TFLM-specific, latent in the original gemm script too.
 
-=== Bug found and fixed: `.sdata`/`.sbss` were silently excluded from copy/zero ranges
+### Bug found and fixed: `.sdata`/`.sbss` were silently excluded from copy/zero ranges
 
 First attempt: relinking `hello_world_test`'s objects against
 `start_semi.o`/`linker_semi.ld` produced a binary that ran to a clean
@@ -342,7 +299,7 @@ whichever stdio code path first dereferences the corrupted `_impure_ptr`
 badly enough to lose output, but the underlying exclusion of `.sdata`/`.sbss`
 from the copy/zero ranges was there regardless.
 
-=== Bug found and fixed: `.init_array`/`.fini_array`/`.preinit_array` are emitted writable, producing an RWX FLASH segment
+### Bug found and fixed: `.init_array`/`.fini_array`/`.preinit_array` are emitted writable, producing an RWX FLASH segment
 
 TFLM's Makefile adds `-Wl,--fatal-warnings` for every gcc-toolchain target
 (`tools/make/Makefile`, unconditionally for `TOOLCHAIN=gcc` + non-osx), so
@@ -379,7 +336,7 @@ Confirmed clean (`readelf -l` shows `R E` for the FLASH segment, `RW` for
 RAM, no `X`) with both `-Wl,--fatal-warnings` and `-Wl,--gc-sections`
 active — the same flags the Makefile always passes.
 
-=== Wired into the Makefile as a proper target: `riscv64_baremetal`
+### Wired into the Makefile as a proper target: `riscv64_baremetal`
 
 Unlike the `SIMULATOR=gem5` switch on `riscv{32,64}_generic` (same target,
 alternate test runner), FS mode needed a genuinely different target: a
@@ -393,12 +350,12 @@ syscalls to emulate), so gem5 FS mode is the only supported runner.
 New target file: `tensorflow/lite/micro/tools/make/targets/riscv64_baremetal_makefile.inc`.
 Notable pieces:
 
-* `RISCV_ARCH := rv64imc_zicsr` (not plain `rv64imc` — needed for
+- `RISCV_ARCH := rv64imc_zicsr` (not plain `rv64imc` — needed for
   `start_semi.S`'s CSR instructions).
-* `LDFLAGS += -nostartfiles -nostdlib -T .../riscv64_baremetal/linker_semi.ld`.
-* `MICROLITE_LIBS := -Wl,--start-group -lc -lm -lgcc -Wl,--end-group`
+- `LDFLAGS += -nostartfiles -nostdlib -T .../riscv64_baremetal/linker_semi.ld`.
+- `MICROLITE_LIBS := -Wl,--start-group -lc -lm -lgcc -Wl,--end-group`
   (overrides the default `-lm`).
-* `MICROLITE_CC_SRCS += .../riscv64_baremetal/start_semi.S` — this is the
+- `MICROLITE_CC_SRCS += .../riscv64_baremetal/start_semi.S` — this is the
   key trick that avoids any manual relink step or core-Makefile change:
   the crt0 gets compiled via the *existing* `$(CORE_OBJDIR)%.o: %.S`
   pattern rule (using this target's own `-march=rv64imc_zicsr` etc.,
@@ -406,14 +363,14 @@ Notable pieces:
   `libtensorflow-microlite.a`, which the standard `%_test` link rule
   already links against — no separate "prepend the startup object" step
   needed, unlike the ad hoc manual relink used while debugging above.
-* `tensorflow/lite/micro/riscv64_baremetal/debug_log.cc` — copy of
+- `tensorflow/lite/micro/riscv64_baremetal/debug_log.cc` — copy of
   `riscv64_generic`'s (`vsnprintf_` + `fputs`), needed because
   `specialize_files.py` keys per-target overrides on the exact `TARGET`
   name; without it the build would fall back to the generic top-level
   `debug_log.cc` (a different, heavier libc-`vfprintf`-based
   implementation) instead of the one already verified against the
   `.sdata`/`.sbss` fix above.
-* New `tensorflow/lite/micro/testing/test_with_gem5_fs.sh` — counterpart
+- New `tensorflow/lite/micro/testing/test_with_gem5_fs.sh` — counterpart
   to `test_with_gem5.sh`, invoking `sim_config/gem5_riscv_baremetal_fs.py`
   (no `--cpu=` flag, since the FS config's `RiscvMinorCPU` is fixed) instead
   of the SE-mode config. `TEST_SCRIPT := ... test_with_gem5_fs.sh riscv64 minor`
@@ -421,10 +378,9 @@ Notable pieces:
   definitions purely for visual/interface consistency; the `riscv64`/`minor`
   words are unused by the script itself.
 
-=== Verified working commands
+### Verified working commands
 
-[source,bash]
-----
+```bash
 source /home/ajno5/work/2_pattern/tflm/script/0_env_var_setup.sh
 cd /home/ajno5/work/2_pattern/tflm/tflite-micro
 
@@ -433,7 +389,7 @@ make -f tensorflow/lite/micro/tools/make/Makefile \
   TARGET_TOOLCHAIN_ROOT=$HOME/work/1_toolchain/xpack/xpack-riscv-none-elf-gcc-13.2.0-2/bin/ \
   TARGET_TOOLCHAIN_PREFIX=riscv-none-elf- \
   test_hello_world_test
-----
+```
 
 Builds the entire `libtensorflow-microlite.a` from scratch for this target
 (first build takes a few minutes — full kernel library, not just the one
@@ -449,21 +405,21 @@ Also re-verified with a second, unrelated test (`test_micro_utils_test`) to
 confirm the target works generally, not just for `hello_world_test` —
 passed cleanly (`0.8 s` simulated wall time vs. `hello_world_test`'s
 `1.77 s`, consistent with it being a much smaller test).
-+
-**Correction, added later:** this specific check was itself a false
-positive — see "The `.init_array` bug" section further below.
-`test_micro_utils_test` uses TFLM's newer GTest-style `TEST()` macro, which
-turned out to silently register zero tests under this crt0 at the time
-(`0 tests ran` / `[PASSED] 0 tests` — a vacuous pass, not a real one). The
-crt0 bug has since been fixed and this test now genuinely passes 8 real
-tests; the "confirms the target works generally" claim above wasn't
-actually established until that fix.
+
+> **Correction, added later:** this specific check was itself a false
+> positive — see "The `.init_array` bug" section further below.
+> `test_micro_utils_test` uses TFLM's newer GTest-style `TEST()` macro, which
+> turned out to silently register zero tests under this crt0 at the time
+> (`0 tests ran` / `[PASSED] 0 tests` — a vacuous pass, not a real one). The
+> crt0 bug has since been fixed and this test now genuinely passes 8 real
+> tests; the "confirms the target works generally" claim above wasn't
+> actually established until that fix.
 
 No more manual relinking against `riscv64_generic`'s build artifacts is
 needed — this target builds and links itself end-to-end through the normal
 Makefile flow, same as any other TFLM target.
 
-=== `tflm_benchmark` on `riscv64_baremetal`, and two more linker-script fixes it surfaced
+### `tflm_benchmark` on `riscv64_baremetal`, and two more linker-script fixes it surfaced
 
 `hello_world_test` is TFLM's smallest possible binary (one `FULLY_CONNECTED`
 op) — it never exercised whether `linker_semi.ld`'s memory budget or section
@@ -473,36 +429,35 @@ handling would hold up for anything bigger. Trying
 the same model used for the `riscv64_generic` SE-mode benchmark documented
 above) hit two more issues:
 
-. **FLASH overflow.** `tflm_benchmark` links in the *entire* kernel library
-  (every op TFLM ships, not just the ones a given model uses — the
-  benchmark harness registers a generic op resolver) plus the model itself
-  compiled in as a `.rodata` C array. First link attempt:
-  `region 'FLASH' overflowed by 701600 bytes` — the 128 KB FLASH region
-  sized for `hello_world_test` was never going to hold this. Fixed by
-  bumping `linker_semi.ld`'s `MEMORY` block: `FLASH` `128 KB → 4 MB` (same
-  `ORIGIN = 0x00010000`), `RAM` `2 MB → 4 MB` (moved to
-  `ORIGIN = 0x00410000`, right after the now-larger FLASH). Both comfortably
-  fit under gem5 FS config's `system.mem_ranges = [AddrRange("512MB")]`
-  (`sim_config/gem5_riscv_baremetal_fs.py`), so no sim-config change was
-  needed — only the linker script.
-. **`.bss` segment allocation error**, only after fixing FLASH: `section
-  '.bss' can't be allocated in segment 1`. Same root cause as the
-  `.heap`/`.stack` LMA-adjustment issue found while wiring up
-  `hello_world_test` (see the `PHDRS`/RWX-segment section above) — .bss has
-  no real ELF file content (it's zero-filled by `start.S`'s own zeroing
-  loop at runtime, not the loader), but without `(NOLOAD)` the linker tries
-  to give it a real LMA continuing from `.data`'s `AT>FLASH` address inside
-  the shared `:ram` segment. That computation only broke once `.bss` grew
-  large enough (`tflm_benchmark`'s `static uint8_t tensor_arena[153600]` —
-  `hello_world_test` has no arena anywhere near that size, which is why this
-  didn't surface earlier). Fixed by marking `.bss (NOLOAD)` too, matching
-  `.heap`/`.stack`, and dropping its now-inapplicable `:ram` PHDR
-  assignment.
+1. **FLASH overflow.** `tflm_benchmark` links in the *entire* kernel library
+   (every op TFLM ships, not just the ones a given model uses — the
+   benchmark harness registers a generic op resolver) plus the model itself
+   compiled in as a `.rodata` C array. First link attempt:
+   `region 'FLASH' overflowed by 701600 bytes` — the 128 KB FLASH region
+   sized for `hello_world_test` was never going to hold this. Fixed by
+   bumping `linker_semi.ld`'s `MEMORY` block: `FLASH` `128 KB → 4 MB` (same
+   `ORIGIN = 0x00010000`), `RAM` `2 MB → 4 MB` (moved to
+   `ORIGIN = 0x00410000`, right after the now-larger FLASH). Both comfortably
+   fit under gem5 FS config's `system.mem_ranges = [AddrRange("512MB")]`
+   (`sim_config/gem5_riscv_baremetal_fs.py`), so no sim-config change was
+   needed — only the linker script.
+2. **`.bss` segment allocation error**, only after fixing FLASH: `section
+   '.bss' can't be allocated in segment 1`. Same root cause as the
+   `.heap`/`.stack` LMA-adjustment issue found while wiring up
+   `hello_world_test` (see the `PHDRS`/RWX-segment section above) — .bss has
+   no real ELF file content (it's zero-filled by `start.S`'s own zeroing
+   loop at runtime, not the loader), but without `(NOLOAD)` the linker tries
+   to give it a real LMA continuing from `.data`'s `AT>FLASH` address inside
+   the shared `:ram` segment. That computation only broke once `.bss` grew
+   large enough (`tflm_benchmark`'s `static uint8_t tensor_arena[153600]` —
+   `hello_world_test` has no arena anywhere near that size, which is why this
+   didn't surface earlier). Fixed by marking `.bss (NOLOAD)` too, matching
+   `.heap`/`.stack`, and dropping its now-inapplicable `:ram` PHDR
+   assignment.
 
 With both fixes, `tflm_benchmark` builds and runs cleanly:
 
-[source,bash]
-----
+```bash
 make -f tensorflow/lite/micro/tools/make/Makefile \
   TARGET=riscv64_baremetal \
   TARGET_TOOLCHAIN_ROOT=$HOME/work/1_toolchain/xpack/xpack-riscv-none-elf-gcc-13.2.0-2/bin/ \
@@ -510,7 +465,7 @@ make -f tensorflow/lite/micro/tools/make/Makefile \
   BUILD_TYPE=default run_tflm_benchmark \
   GENERIC_BENCHMARK_MODEL_PATH=tensorflow/lite/micro/models/person_detect.tflite \
   GENERIC_BENCHMARK_ARENA_SIZE=153600
-----
+```
 
 All 30 ops executed, arena usage `89,248 B` total (`61.96%` non-persistent /
 `38.04%` persistent) — identical numbers to the `riscv64_generic` SE-mode
@@ -523,26 +478,24 @@ conclusions should be drawn from that difference yet. Per-op timings are all
 `0 ticks (0 ms)`, the same pre-existing profiling-clock gap noted for
 `riscv{32,64}_generic` above.
 
-== Whisper support on `riscv64_baremetal`: a second, faster simulator
+## Whisper support on `riscv64_baremetal`: a second, faster simulator
 
 gem5 FS mode (above) is cycle-accurate but slow. Since `riscv64_baremetal`
 binaries do their I/O via RISC-V semihosting (`start_semi.S`'s
-`SYS_WRITE0`/`SYS_EXIT`), and
-https://github.com/chipsalliance/whisper[whisper] — a functional-only
-RISC-V ISS, no timing model, already used by the sibling `gemm` project —
-supports semihosting directly via `--semihosting`, the exact same
-`riscv64_baremetal` binaries run under it unmodified. Wired in as a second
-`SIMULATOR` choice, same pattern as `qemu`/`gem5` on
+`SYS_WRITE0`/`SYS_EXIT`), and [whisper](https://github.com/chipsalliance/whisper)
+— a functional-only RISC-V ISS, no timing model, already used by the
+sibling `gemm` project — supports semihosting directly via `--semihosting`,
+the exact same `riscv64_baremetal` binaries run under it unmodified. Wired
+in as a second `SIMULATOR` choice, same pattern as `qemu`/`gem5` on
 `riscv{32,64}_generic`:
 
-[source,bash]
-----
+```bash
 make -f tensorflow/lite/micro/tools/make/Makefile \
   TARGET=riscv64_baremetal SIMULATOR=whisper \
   TARGET_TOOLCHAIN_ROOT=$HOME/work/1_toolchain/xpack/xpack-riscv-none-elf-gcc-13.2.0-2/bin/ \
   TARGET_TOOLCHAIN_PREFIX=riscv-none-elf- \
   test_hello_world_test
-----
+```
 
 `~~~ALL TESTS PASSED~~~`, `Pass`, identical arena stats to the gem5 run.
 449,784 instructions executed in `0.04s` wall-clock (~11.8M inst/s) —
@@ -559,7 +512,7 @@ gem5 configs, same reasoning). `riscv64_baremetal_makefile.inc` gained a
 `SIMULATOR ?= gem5` switch (whisper is opt-in; default behavior/existing
 verified gem5 runs are unaffected).
 
-=== Why the whisper config declares vector/float support the binary doesn't use
+### Why the whisper config declares vector/float support the binary doesn't use
 
 The straightforward move would've been a trimmed `{"isa": "rv64imc", ...}`
 config matching `riscv64_baremetal`'s actual `-march=rv64imc_zicsr` build —
@@ -584,7 +537,7 @@ to enable) and, more importantly, is ready as-is for whenever a vectorized
 TFLM kernel build exists to point at it — no config rework needed later,
 just a target/`-march=` change on the TFLM build side.
 
-== The `.init_array` bug: silent vacuous test passes on `riscv64_baremetal`
+## The `.init_array` bug: silent vacuous test passes on `riscv64_baremetal`
 
 Picked `dtln_noise_suppression` (a real, larger model — `M=1, K=128, N=257`
 `FULLY_CONNECTED` layer, 364 KB, LSTM + FC) as a matrix-optimization
@@ -593,12 +546,11 @@ benchmark candidate and built its dedicated `dtln_test` target
 executed cleanly under gem5 FS mode, printed `~~~ALL TESTS PASSED~~~`,
 exit code 0 — but the actual test log read:
 
-[source]
-----
+```
 [==========] Running tests.
 [==========] 0 tests ran.
 [  PASSED  ] 0 tests.
-----
+```
 
 Zero tests ran, yet it "passed" — a vacuous pass (0 failures out of 0
 tests is trivially true), not a real one. `dtln_test.cc` uses
@@ -636,57 +588,37 @@ registration anywhere).
 
 Re-verified after the fix, no regressions:
 
-[cols="2,1,2"]
-|===
-|Test |Simulator |Result
+| Test | Simulator | Result |
+|---|---|---|
+| `dtln_test` | gem5 | Now genuinely runs: `[ RUN ] DtlnTest.TestInvoke` → all `EXPECT_EQ` assertions (input/output shape, `Invoke()` status, full 257-element golden-reference comparison) pass → `[ OK ]` → `1 tests ran` / `[PASSED] 1 tests`. `tick 5996072000` (~6.0 ms simulated) — the biggest/slowest `riscv64_baremetal` test run so far, consistent with it being the largest model. |
+| `dtln_test` | whisper | Same genuine pass (`[ RUN ]` → `Ran successfully` → `[ OK ]` → `1 tests ran` / `PASSED`). `4,711,964` instructions in `0.38s` wall-clock (~12.5M inst/s) — no cycle-accurate timing model, so not directly comparable to gem5's tick count, but the fastest way to iterate on this test. |
+| `micro_utils_test` | gem5 | Also `TEST()`-based, also silently vacuous before this fix. Now genuinely runs `8 tests ran` / `[PASSED] 8 tests`. |
+| `hello_world_test` | gem5 + whisper | Unaffected either way (older macro style) — re-confirmed identical output/arena stats after the fix. |
+| `tflm_benchmark` (`person_detect.tflite`) | gem5 | Unaffected — identical `89,248 B` arena, same 30 ops, `tick 429485090000` (~429 ms, matches the ~422 ms from the pre-fix run within normal variance). |
 
-|`dtln_test` |gem5 |Now genuinely runs: `[ RUN ] DtlnTest.TestInvoke` →
-all `EXPECT_EQ` assertions (input/output shape, `Invoke()` status, full
-257-element golden-reference comparison) pass → `[ OK ]` → `1 tests ran` /
-`[PASSED] 1 tests`. `tick 5996072000` (~6.0 ms simulated) — the biggest/
-slowest `riscv64_baremetal` test run so far, consistent with it being the
-largest model.
+## Known limitations / follow-ups not yet done
 
-|`dtln_test` |whisper |Same genuine pass (`[ RUN ]` → `Ran successfully` →
-`[ OK ]` → `1 tests ran` / `PASSED`). `4,711,964` instructions in `0.38s`
-wall-clock (~12.5M inst/s) — no cycle-accurate timing model, so not
-directly comparable to gem5's tick count, but the fastest way to iterate
-on this test.
-
-|`micro_utils_test` |gem5 |Also `TEST()`-based, also silently vacuous
-before this fix. Now genuinely runs `8 tests ran` / `[PASSED] 8 tests`.
-
-|`hello_world_test` |gem5 + whisper |Unaffected either way (older macro
-style) — re-confirmed identical output/arena stats after the fix.
-
-|`tflm_benchmark` (`person_detect.tflite`) |gem5 |Unaffected — identical
-`89,248 B` arena, same 30 ops, `tick 429485090000` (~429 ms, matches the
-~422 ms from the pre-fix run within normal variance).
-|===
-
-== Known limitations / follow-ups not yet done
-
-* `keyword_benchmark` and `person_detection_benchmark` (the two dedicated
+- `keyword_benchmark` and `person_detection_benchmark` (the two dedicated
   benchmark binaries under `tensorflow/lite/micro/benchmarks/`, as opposed
   to the generic `tflm_benchmark`) haven't been tried yet on
   `riscv{32,64}_generic` under either simulator. The `SIMULATOR=gem5`
   wiring should apply to them unchanged, but this is unverified.
-* Per-op timing breakdowns are unusable on these targets (see above) —
+- Per-op timing breakdowns are unusable on these targets (see above) —
   only whole-run gem5 tick counts are meaningful right now.
-* `TARGET_TOOLCHAIN_ROOT`/`TARGET_TOOLCHAIN_PREFIX` must be overridden by
+- `TARGET_TOOLCHAIN_ROOT`/`TARGET_TOOLCHAIN_PREFIX` must be overridden by
   hand on every invocation, since the upstream default toolchain doesn't
   run on this (aarch64) host at all. Could be made the target's own default
   if this host will be used long-term, but that's a bigger, more
   opinionated change than what was asked for here.
-* `--cpu=minor` is gem5's default in `test_with_gem5.sh`/`gem5_riscv_se.py`
+- `--cpu=minor` is gem5's default in `test_with_gem5.sh`/`gem5_riscv_se.py`
   for parity with the `gemm` project's convention, not because it was
   compared against `atomic`/`timing` for this workload — no performance
   claims should be read into that choice yet.
-* No cycle-count/roofline-style analysis has been attempted here (unlike
+- No cycle-count/roofline-style analysis has been attempted here (unlike
   the `gemm` project) — this work only establishes that the RISC-V
   binaries execute correctly under gem5, not what their performance looks
   like.
-* FS-mode bare-metal (`riscv64_baremetal`) is now a proper Makefile target,
+- FS-mode bare-metal (`riscv64_baremetal`) is now a proper Makefile target,
   verified for `test_hello_world_test`, `test_micro_utils_test`, and
   `run_tflm_benchmark` (`person_detect.tflite`, 30 ops, 89,248 B arena —
   see above). `linker_semi.ld`'s memory budget is now `FLASH` 4 MB /
@@ -695,15 +627,15 @@ style) — re-confirmed identical output/arena stats after the fix.
   the full `test` suite still hasn't been run — some individual kernel
   tests with unusually large fixture tensors, or benchmarks with bigger
   models/arenas, could still exceed 4 MB and haven't been checked.
-* There is no RV32 bare-metal FS-mode target (`riscv32_baremetal`) —
+- There is no RV32 bare-metal FS-mode target (`riscv32_baremetal`) —
   `riscv64_baremetal` is RV64-only, mirroring how the FS-mode prototyping
   work happened to start on RV64. Adding an RV32 counterpart would follow
   the same pattern (new `rv32imc_zicsr`/`ilp32` target file + linker
   script), just not done yet.
-* `keyword_benchmark`/`person_detection_benchmark` (the two dedicated
+- `keyword_benchmark`/`person_detection_benchmark` (the two dedicated
   benchmark binaries, as opposed to the generic `tflm_benchmark` verified
   above) are unverified under FS mode.
-* `dtln_test` (see the `.init_array` bug section above) is the current pick
+- `dtln_test` (see the `.init_array` bug section above) is the current pick
   for matrix-optimization benchmarking going forward — its one
   `FULLY_CONNECTED` layer (`M=1, K=128, N=257`) is the largest/most
   "square" GEMM shape among the example models checked
@@ -711,11 +643,11 @@ style) — re-confirmed identical output/arena stats after the fix.
   only 4 outputs). Verified passing under both `SIMULATOR=gem5` and
   `SIMULATOR=whisper` now; no vectorized kernel exists yet to actually
   exercise the vector-capable whisper config against it.
-* `whisper_rv64gcv_config.json` declares vector/float support that no
+- `whisper_rv64gcv_config.json` declares vector/float support that no
   current TFLM build actually uses — `riscv64_baremetal` still compiles
   `rv64imc_zicsr` (no `v`/`f`/`d`). It's a placeholder for future
   vectorized-kernel work (see the whisper section above), not something
   currently exercised; whisper's `Fp`/`Vector`/etc. HPM counters will read
   0 for every binary run against this target today.
-* `tflm_benchmark` under `SIMULATOR=whisper` hasn't been tried yet — only
+- `tflm_benchmark` under `SIMULATOR=whisper` hasn't been tried yet — only
   `test_hello_world_test` has been verified with whisper so far.
