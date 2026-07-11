@@ -709,6 +709,144 @@ target was originally picked for is comparatively cheap. Worth keeping in
 mind if/when comparing a vectorized `FULLY_CONNECTED` kernel against this
 baseline: the LSTM, not the FC layer, is this model's actual bottleneck.
 
+## A vectorized `FULLY_CONNECTED` kernel: `riscv64_baremetal_vector`
+
+Built a real RVV-vectorized replacement for the int8-quantized
+`FullyConnected()` reduction and compared it against the scalar baseline
+above (378,379 gem5 cycles / 311,697 whisper cycles).
+
+### The math, and why it needed a genuinely new target
+
+`dtln`'s FC layer's quantization params (pulled from the model's flatbuffer):
+input zero-point `-4` (so `input_offset = +4`, **not** zero — asymmetric
+activation quantization), filter zero-point `0` with a single scale
+(per-tensor, so `is_per_channel` is false — the plain `FullyConnected()`
+template runs, not `FullyConnectedPerChannel()`). The reference scalar loop
+computes, per output channel:
+
+```
+acc = Σ_d (filter[d] + filter_offset) * (input[d] + input_offset)
+```
+
+Since `input_offset != 0`, this isn't a pure int8×int8 dot product as-is.
+Rather than the usual gemmlowp-style trick (precompute a per-row filter
+sum once, correct for the offset afterward), widening *both* operands to
+int16 first — via a single `vwadd.vx` each, folding `filter_offset`/
+`input_offset` into the widen itself — keeps the two approaches
+term-by-term identical to the reference formula (integer add/multiply is
+exactly associative, so there's no reordering-sensitive precision loss
+the way float accumulation would have). Then `int16×int16→int32` widening
+multiply (`vwmul.vv`) and a widening-free `int32` reduction
+(`vredsum.vs`). Verified the toolchain (xpack GCC 13.2.0) accepts this
+against `-march=rv64imc_zicsr_zve64x` (`Zve64x`: integer-only embedded
+vector profile, `ELEN=64` — matches `elen=64` in both
+`sim_config/gem5_riscv_baremetal_fs.py` and
+`sim_config/whisper_rv64gcv_config.json`, so **no sim-config changes were
+needed** — they were already vector-capable, per the earlier section on
+why the whisper config declares extensions the (then-)current binary
+didn't use) via a standalone probe file before touching the real kernel.
+
+New target: `riscv64_baremetal_vector` (own `TARGET_ARCH`/`makefile.inc`/
+`riscv64_baremetal_vector/{start_semi.S,linker_semi.ld,debug_log.cc,
+micro_time.cc}` — copies of the plain `riscv64_baremetal` ones, unchanged).
+Deliberately a **separate target**, not a `RISCV_ARCH` override on the
+existing one: TFLM's `GENDIR` path
+(`gen/<TARGET>_<host>_<build_type>_<toolchain>/`) is keyed on `TARGET`
+name, not on `RISCV_ARCH` — overriding the arch on the same target would
+risk silently reusing stale, wrong-ISA `.o` files from a previous build
+without forcing a rebuild.
+
+### The fast path itself
+
+Added `Int8DotProductRvv()` and a `#if defined(__riscv_vector)`-gated call
+site inside `tensorflow/lite/kernels/internal/reference/integer_ops/fully_connected.h`'s
+plain `FullyConnected()` template — inert (compiles to nothing extra) on
+every target that doesn't define `__riscv_vector`, active only on
+`riscv64_baremetal_vector`. Modifying this shared reference header (rather
+than inventing new build-system plumbing to swap in a per-target kernel
+file, the way `xtensa`/`cmsis_nn`/etc. do) was the simplest available
+mechanism: there's no existing "optimized kernel" override slot for
+`FullyConnected` the way there is for `debug_log.cc`/`micro_time.cc`, and
+building one would have been a much bigger, unrelated undertaking.
+
+### Bug found and fixed: the `if constexpr` guard didn't check `OutputType`
+
+First build compiled clean and ran — `FULLY_CONNECTED` dropped from
+378,379 to 79,742 gem5 cycles, and (unexpectedly) `UNIDIRECTIONAL_SEQUENCE_LSTM`
+*also* sped up ~4.9×. Investigating that: `kernels/lstm_eval.cc` calls this
+exact same `reference_integer_ops::FullyConnected()` template internally
+for its gate matmuls (`int8` input/filter, `int32` bias — same as the
+top-level `FullyConnected` op's dtln usage — but `int16_t` **output**,
+since gate pre-activations need more precision than int8 before going
+through the sigmoid/tanh nonlinearities). The `if constexpr` guard checked
+`InputType`/`WeightType`/`BiasType` but not `OutputType`, so the fast path
+silently applied there too. And **Output CRC32 changed**
+(`0x50433D2B` vs. the correct `0x7E578D1C`) — a real correctness
+regression, not just a missed-optimization gap.
+
+Restricting the guard to also require `OutputType == int8_t` initially
+appeared to have *no effect at all* — identical cycle counts, identical
+wrong CRC32 — because **this build has zero `.d` dependency files
+anywhere** (confirmed via `find ... -iname "*.d"`, zero results): the
+Makefile has no automatic header-dependency generation
+(no `-MMD`/`-MD`), so `make` has no way to know any `.o` file depends on a
+transitively-`#include`d header, and never recompiles on a header-only
+change — only when the directly-listed `.cc` source itself changes. Had to
+manually `rm` the specific stale objects
+(`fully_connected.o`, `fully_connected_common.o`, `lstm_eval.o`,
+`lstm_eval_common.o`) plus the archived `.a` and the linked binary before
+the guard fix actually took effect. **This is a real, generally-applicable
+gap in this build system worth remembering**: editing a header used by
+multiple `.cc` files needs a manual forced rebuild (delete the affected
+`.o`s, or `make clean`) — `make` alone will silently keep linking stale
+object code.
+
+With the `OutputType == int8_t` restriction actually compiled in: Output
+CRC32 back to `0x7E578D1C` (matches baseline exactly — correctness
+confirmed), LSTM back to near-baseline (no longer vectorized, as intended —
+its `int16_t`-output overload wasn't validated safe and wasn't the target
+of this exercise anyway), `FULLY_CONNECTED` still fast.
+
+### Results
+
+| | gem5 (cycle-accurate `RiscvMinorCPU`) | whisper (functional, no timing model) |
+|---|---|---|
+| Baseline `FULLY_CONNECTED` | 378,379 cycles | 311,697 cycles |
+| Vectorized `FULLY_CONNECTED` | 79,786 cycles | 25,477 cycles |
+| **Speedup** | **4.74×** | **12.2×** |
+
+Output CRC32 (`0x7E578D1C`) identical to the scalar baseline in both cases —
+same computation, verified correct. Whisper's speedup number is
+substantially larger than gem5's — expected, given whisper has no
+cycle-accurate memory/pipeline model, so it can't capture the real cost of
+the vector loads/stores the way `RiscvMinorCPU` does; **gem5's 4.74× is
+the trustworthy figure for actual hardware-relevant comparison**, whisper's
+12.2× shouldn't be read as a real-world expectation.
+
+Because the LSTM dominates total model cycles (~91%, see the per-op cycle
+count section above) and wasn't accelerated here, the *whole-model*
+speedup is much smaller than the FC-layer speedup alone: gem5 total ticks
+across profiled ops go from 4,999,325 to 4,369,141 (~12.6% faster overall),
+whisper from 4,567,534 to 4,281,314 (~6.3% faster overall) — worth keeping
+in mind when characterizing "the win" from this work: it's real and large
+for the layer it targets, modest for this particular model end-to-end.
+
+### Known limitations of this specific kernel
+
+- Only handles the plain (non-per-channel) int8 `FullyConnected()`
+  overload with `int8_t` output — deliberately, per the bug above. The
+  per-channel variant (`FullyConnectedPerChannel`), the int16-activation
+  variant, and float32 are all untouched, still scalar.
+- `filter_offset`/row-sum-equivalent correction is folded into the
+  `vwadd.vx` widen and recomputed fresh on every `Invoke()` call — a
+  production kernel would instead precompute anything filter-derived once
+  at `Prepare()` time (the filter doesn't change between invocations) and
+  cache it. Not done here, since it wasn't necessary to get a valid,
+  correct comparison — just something a production version would want.
+- Only exercised against `dtln_noise_suppression.tflite`'s specific FC
+  shape (`M=1, K=128, N=257`). Not verified against other FC shapes/models
+  (e.g. `micro_speech`'s `K=4000, N=4`).
+
 ## Known limitations / follow-ups not yet done
 
 - `keyword_benchmark` and `person_detection_benchmark` (the two dedicated

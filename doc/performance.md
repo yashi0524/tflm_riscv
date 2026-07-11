@@ -91,6 +91,49 @@ small fraction of this model's total cost.
 `person_detect.tflite` hasn't been run through this same per-op profiling
 path yet — deliberately skipped given its ~7–9 minute gem5 wall-clock cost.
 
+## Vectorized `FULLY_CONNECTED` (`riscv64_baremetal_vector`) vs. scalar baseline
+
+See "A vectorized `FULLY_CONNECTED` kernel" in
+[`gem5_integration.md`](gem5_integration.md) for the implementation and a
+real correctness bug found/fixed along the way (an `if constexpr` type
+guard that didn't check `OutputType`, which let the fast path incorrectly
+apply to `lstm_eval.cc`'s internal `int16_t`-output gate matmuls — caught
+via an Output CRC32 mismatch, `0x50433D2B` vs. the correct `0x7E578D1C`).
+
+| | gem5 (cycle-accurate) | whisper (functional, no timing model) |
+|---|---|---|
+| Baseline `FULLY_CONNECTED` | 378,379 | 311,697 |
+| Vectorized `FULLY_CONNECTED` | 79,786 | 25,477 |
+| **Speedup** | **4.74×** | **12.2×** (not representative — see below) |
+
+Output CRC32 (`0x7E578D1C`) identical to baseline in both cases — verified
+correct, not just faster. gem5's 4.74× is the number to trust; whisper's
+12.2× is inflated by having no cycle-accurate memory/pipeline model (can't
+capture the real cost of the vector loads), so don't read it as a
+real-hardware expectation.
+
+Whole-model effect (LSTM, ~91% of total cycles, wasn't vectorized here):
+
+| | gem5 total ticks | whisper total ticks |
+|---|---|---|
+| Baseline | 4,999,325 | 4,567,534 |
+| With vectorized FC | 4,369,141 | 4,281,314 |
+| **Whole-model speedup** | **~12.6%** | **~6.3%** |
+
+Target: `riscv64_baremetal_vector` (`-march=rv64imc_zicsr_zve64x`) — a
+separate `TARGET` from plain `riscv64_baremetal` deliberately, to avoid
+`GENDIR` cache collisions between the two `-march=` variants (this build
+has no `.d` header-dependency tracking at all — a real gotcha discovered
+along the way, see the doc — so mixing arches under one `TARGET` risks
+silently linking stale objects).
+
+```bash
+make -f tensorflow/lite/micro/tools/make/Makefile TARGET=riscv64_baremetal_vector $TOOLCHAIN_ARGS \
+  BUILD_TYPE=default run_tflm_benchmark \
+  GENERIC_BENCHMARK_MODEL_PATH=tensorflow/lite/micro/examples/dtln/dtln_noise_suppression.tflite \
+  GENERIC_BENCHMARK_ARENA_SIZE=16384
+```
+
 ## Benchmark candidate comparison (FC/Conv layer shapes)
 
 Pulled directly from each model's flatbuffer via the vendored
