@@ -449,6 +449,15 @@ Also re-verified with a second, unrelated test (`test_micro_utils_test`) to
 confirm the target works generally, not just for `hello_world_test` —
 passed cleanly (`0.8 s` simulated wall time vs. `hello_world_test`'s
 `1.77 s`, consistent with it being a much smaller test).
++
+**Correction, added later:** this specific check was itself a false
+positive — see "The `.init_array` bug" section further below.
+`test_micro_utils_test` uses TFLM's newer GTest-style `TEST()` macro, which
+turned out to silently register zero tests under this crt0 at the time
+(`0 tests ran` / `[PASSED] 0 tests` — a vacuous pass, not a real one). The
+crt0 bug has since been fixed and this test now genuinely passes 8 real
+tests; the "confirms the target works generally" claim above wasn't
+actually established until that fix.
 
 No more manual relinking against `riscv64_generic`'s build artifacts is
 needed — this target builds and links itself end-to-end through the normal
@@ -575,6 +584,80 @@ to enable) and, more importantly, is ready as-is for whenever a vectorized
 TFLM kernel build exists to point at it — no config rework needed later,
 just a target/`-march=` change on the TFLM build side.
 
+== The `.init_array` bug: silent vacuous test passes on `riscv64_baremetal`
+
+Picked `dtln_noise_suppression` (a real, larger model — `M=1, K=128, N=257`
+`FULLY_CONNECTED` layer, 364 KB, LSTM + FC) as a matrix-optimization
+benchmark candidate and built its dedicated `dtln_test` target
+(`tensorflow/lite/micro/examples/dtln/dtln_test.cc`). First run: built and
+executed cleanly under gem5 FS mode, printed `~~~ALL TESTS PASSED~~~`,
+exit code 0 — but the actual test log read:
+
+[source]
+----
+[==========] Running tests.
+[==========] 0 tests ran.
+[  PASSED  ] 0 tests.
+----
+
+Zero tests ran, yet it "passed" — a vacuous pass (0 failures out of 0
+tests is trivially true), not a real one. `dtln_test.cc` uses
+`testing/micro_test_v2.h`'s GTest-style `TEST(suite, name)` macro, unlike
+`hello_world_test`'s older `TF_LITE_MICRO_TEST` macro. Checking
+`micro_test_v2.h` confirmed why: `TEST(...)` expands to a
+`static micro_test::internal::TestRegistrar suite_name_Reg(&info);` at
+namespace scope — a static C++ object whose **non-trivial constructor**
+(`TestRegistrar(TestInfo*) { TestRunner::Get().RegisterTest(info); }`)
+registers the test into a global list. Static objects with non-trivial
+constructors are initialized by the C++ runtime *before* `main()` runs, via
+the `.init_array`/`.preinit_array` mechanism — and `start_semi.S` never
+called it. It went straight from the `.data` copy loop to `call main`.
+`linker_semi.ld` already defined the `__{preinit,init}_array_{start,end}`
+symbols (needed regardless, so `.init_array`/`.preinit_array` content
+isn't silently dropped by the linker) — nothing was ever walking them at
+runtime.
+
+Net effect: every `TEST()`-based test on `riscv64_baremetal` was silently
+running zero of its tests and reporting success the entire time this
+target has existed, including `test_micro_utils_test`, which had been used
+earlier as the "second test, not just `hello_world_test`" sanity check
+when this target was first wired into the Makefile (see the correction
+inline in the "Verified working commands" section above) — that check
+never actually verified anything beyond "the binary doesn't crash."
+`hello_world_test` itself was never affected, since its `TF_LITE_MICRO_TEST`
+macro (the older style) doesn't rely on static-constructor registration.
+
+Fix: `start_semi.S` now walks `__preinit_array_start`..`__preinit_array_end`
+and `__init_array_start`..`__init_array_end`, calling each function pointer
+before `call main` — standard freestanding-crt0 boilerplate that should
+have been there from the start (copied from `gemm`'s crt0, which likely
+never hit this because gemm's own kernels don't use static-constructor-based
+registration anywhere).
+
+Re-verified after the fix, no regressions:
+
+[cols="2,1,2"]
+|===
+|Test |Simulator |Result
+
+|`dtln_test` |gem5 |Now genuinely runs: `[ RUN ] DtlnTest.TestInvoke` →
+all `EXPECT_EQ` assertions (input/output shape, `Invoke()` status, full
+257-element golden-reference comparison) pass → `[ OK ]` → `1 tests ran` /
+`[PASSED] 1 tests`. `tick 5996072000` (~6.0 ms simulated) — the biggest/
+slowest `riscv64_baremetal` test run so far, consistent with it being the
+largest model.
+
+|`micro_utils_test` |gem5 |Also `TEST()`-based, also silently vacuous
+before this fix. Now genuinely runs `8 tests ran` / `[PASSED] 8 tests`.
+
+|`hello_world_test` |gem5 + whisper |Unaffected either way (older macro
+style) — re-confirmed identical output/arena stats after the fix.
+
+|`tflm_benchmark` (`person_detect.tflite`) |gem5 |Unaffected — identical
+`89,248 B` arena, same 30 ops, `tick 429485090000` (~429 ms, matches the
+~422 ms from the pre-fix run within normal variance).
+|===
+
 == Known limitations / follow-ups not yet done
 
 * `keyword_benchmark` and `person_detection_benchmark` (the two dedicated
@@ -614,6 +697,14 @@ just a target/`-march=` change on the TFLM build side.
 * `keyword_benchmark`/`person_detection_benchmark` (the two dedicated
   benchmark binaries, as opposed to the generic `tflm_benchmark` verified
   above) are unverified under FS mode.
+* `dtln_test` (see the `.init_array` bug section above) is the current pick
+  for matrix-optimization benchmarking going forward — its one
+  `FULLY_CONNECTED` layer (`M=1, K=128, N=257`) is the largest/most
+  "square" GEMM shape among the example models checked
+  (`hello_world`: `1×16×16` at most; `micro_speech`: `1×4000×4`, deep-K but
+  only 4 outputs). Not yet run under `SIMULATOR=whisper`, and no vectorized
+  kernel exists to actually exercise the vector-capable whisper config
+  against it yet.
 * `whisper_rv64gcv_config.json` declares vector/float support that no
   current TFLM build actually uses — `riscv64_baremetal` still compiles
   `rv64imc_zicsr` (no `v`/`f`/`d`). It's a placeholder for future
