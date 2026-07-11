@@ -1,0 +1,34 @@
+{
+    "isa" : "rv64imafdcv_zfh_zvfh_zfbfmin_zvfbfmin_zvfbfwma",
+    "abi_names" : "true",
+
+    "xlen": 64,
+    
+    "misa": {
+    "reset": "0x800000000034112D",
+    "mask": "0x0000000000000000"
+        },
+    "mstatus": {
+        "reset": "0x2200"
+        },
+    
+    "vector": {
+        "bytes_per_vec": 64,
+        "min_bytes_per_elem": 1,
+        "max_bytes_per_elem": 8
+    },
+    "num_mmode_perf_regs" : 8,
+    "enable_performance_counters": true,  
+    "mhpmevent3": {
+      "reset": "0x0000000000000040",
+      "mask": "0xFFFFFFFFFFFFFFFF"
+    },       
+    "mmode_perf_event_map" : {
+        "InstCommited": 1,
+        "Fp": 10,
+        "FpDouble":11,
+        "Vector"  : 61,
+        "VectorLoad"  : 64,
+        "VectorStore" : 65
+  }
+}

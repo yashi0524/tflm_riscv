@@ -514,6 +514,67 @@ conclusions should be drawn from that difference yet. Per-op timings are all
 `0 ticks (0 ms)`, the same pre-existing profiling-clock gap noted for
 `riscv{32,64}_generic` above.
 
+== Whisper support on `riscv64_baremetal`: a second, faster simulator
+
+gem5 FS mode (above) is cycle-accurate but slow. Since `riscv64_baremetal`
+binaries do their I/O via RISC-V semihosting (`start_semi.S`'s
+`SYS_WRITE0`/`SYS_EXIT`), and
+https://github.com/chipsalliance/whisper[whisper] — a functional-only
+RISC-V ISS, no timing model, already used by the sibling `gemm` project —
+supports semihosting directly via `--semihosting`, the exact same
+`riscv64_baremetal` binaries run under it unmodified. Wired in as a second
+`SIMULATOR` choice, same pattern as `qemu`/`gem5` on
+`riscv{32,64}_generic`:
+
+[source,bash]
+----
+make -f tensorflow/lite/micro/tools/make/Makefile \
+  TARGET=riscv64_baremetal SIMULATOR=whisper \
+  TARGET_TOOLCHAIN_ROOT=$HOME/work/1_toolchain/xpack/xpack-riscv-none-elf-gcc-13.2.0-2/bin/ \
+  TARGET_TOOLCHAIN_PREFIX=riscv-none-elf- \
+  test_hello_world_test
+----
+
+`~~~ALL TESTS PASSED~~~`, `Pass`, identical arena stats to the gem5 run.
+449,784 instructions executed in `0.04s` wall-clock (~11.8M inst/s) —
+whisper has no cycle-accurate timing model, so this isn't directly
+comparable to gem5's simulated-tick numbers above, just fast to iterate
+with.
+
+New files: `tensorflow/lite/micro/testing/test_with_whisper.sh` (mirrors
+`test_with_gem5_fs.sh`'s interface — same positional args, same pass-string
+grep logic — just invokes `whisper --configfile <config> --semihosting
+--counters --target <binary>` instead of `gem5.opt`) and
+`sim_config/whisper_rv64gcv_config.json` (outside the repo, alongside the
+gem5 configs, same reasoning). `riscv64_baremetal_makefile.inc` gained a
+`SIMULATOR ?= gem5` switch (whisper is opt-in; default behavior/existing
+verified gem5 runs are unaffected).
+
+=== Why the whisper config declares vector/float support the binary doesn't use
+
+The straightforward move would've been a trimmed `{"isa": "rv64imc", ...}`
+config matching `riscv64_baremetal`'s actual `-march=rv64imc_zicsr` build —
+and that does work, but produces a warning on every run:
+`Bit 21 (v) is set in the MISA register but the d/f extensions are not
+enabled -- ignored`. Cause: `start_semi.S` (inherited from `gemm`'s crt0,
+written for its vector-capable `rv64gcv` target) unconditionally executes
+`csrs mstatus, 0x2200` at boot to enable `mstatus.FS`/`mstatus.VS`,
+regardless of what the target ISA actually supports. gem5 never surfaced
+this because its FS config always sets `RiscvISA(vlen=512, elen=64)`
+independent of the compiled binary's extensions; whisper's `rv64imc` config
+correctly has no vector support at all, so it notices the mismatch.
+
+Per instruction, `sim_config/whisper_rv64gcv_config.json` is instead an
+exact copy of gemm's own config — full `rv64imafdcv_zfh_zvfh_...` ISA,
+VLEN=512/ELEN=64, HPM counters for `Fp`/`FpDouble`/`Vector`/`VectorLoad`/
+`VectorStore` — even though the current `riscv64_baremetal` target doesn't
+compile with `-march=rv64gcv` and so never exercises any of that. Confirmed
+this superset config runs the existing `rv64imc_zicsr` binary cleanly (no
+warning, since the ISA now actually has the bits `start_semi.S` is trying
+to enable) and, more importantly, is ready as-is for whenever a vectorized
+TFLM kernel build exists to point at it — no config rework needed later,
+just a target/`-march=` change on the TFLM build side.
+
 == Known limitations / follow-ups not yet done
 
 * `keyword_benchmark` and `person_detection_benchmark` (the two dedicated
@@ -553,3 +614,11 @@ conclusions should be drawn from that difference yet. Per-op timings are all
 * `keyword_benchmark`/`person_detection_benchmark` (the two dedicated
   benchmark binaries, as opposed to the generic `tflm_benchmark` verified
   above) are unverified under FS mode.
+* `whisper_rv64gcv_config.json` declares vector/float support that no
+  current TFLM build actually uses — `riscv64_baremetal` still compiles
+  `rv64imc_zicsr` (no `v`/`f`/`d`). It's a placeholder for future
+  vectorized-kernel work (see the whisper section above), not something
+  currently exercised; whisper's `Fp`/`Vector`/etc. HPM counters will read
+  0 for every binary run against this target today.
+* `tflm_benchmark` under `SIMULATOR=whisper` hasn't been tried yet — only
+  `test_hello_world_test` has been verified with whisper so far.
