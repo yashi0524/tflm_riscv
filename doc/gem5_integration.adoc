@@ -647,6 +647,12 @@ all `EXPECT_EQ` assertions (input/output shape, `Invoke()` status, full
 slowest `riscv64_baremetal` test run so far, consistent with it being the
 largest model.
 
+|`dtln_test` |whisper |Same genuine pass (`[ RUN ]` → `Ran successfully` →
+`[ OK ]` → `1 tests ran` / `PASSED`). `4,711,964` instructions in `0.38s`
+wall-clock (~12.5M inst/s) — no cycle-accurate timing model, so not
+directly comparable to gem5's tick count, but the fastest way to iterate
+on this test.
+
 |`micro_utils_test` |gem5 |Also `TEST()`-based, also silently vacuous
 before this fix. Now genuinely runs `8 tests ran` / `[PASSED] 8 tests`.
 
@@ -702,9 +708,9 @@ style) — re-confirmed identical output/arena stats after the fix.
   `FULLY_CONNECTED` layer (`M=1, K=128, N=257`) is the largest/most
   "square" GEMM shape among the example models checked
   (`hello_world`: `1×16×16` at most; `micro_speech`: `1×4000×4`, deep-K but
-  only 4 outputs). Not yet run under `SIMULATOR=whisper`, and no vectorized
-  kernel exists to actually exercise the vector-capable whisper config
-  against it yet.
+  only 4 outputs). Verified passing under both `SIMULATOR=gem5` and
+  `SIMULATOR=whisper` now; no vectorized kernel exists yet to actually
+  exercise the vector-capable whisper config against it.
 * `whisper_rv64gcv_config.json` declares vector/float support that no
   current TFLM build actually uses — `riscv64_baremetal` still compiles
   `rv64imc_zicsr` (no `v`/`f`/`d`). It's a placeholder for future
