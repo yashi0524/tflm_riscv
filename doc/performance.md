@@ -14,7 +14,13 @@ instruction count (functional-only, no timing model — **not**
 comparable to gem5 ticks, just useful as a relative "how much work did
 this do" signal and for fast iteration).
 
-## `riscv{32,64}_generic` (SE / syscall-emulation mode, gem5)
+## `riscv{32,64}_generic` (SE / syscall-emulation mode, gem5) — historical, now disabled
+
+> `SIMULATOR=gem5` on these targets is now disabled (`$(error ...)`) — see
+> "gem5 SE mode disabled" in [`gem5_integration.md`](gem5_integration.md).
+> `riscv64_baremetal` + `SIMULATOR=whisper` covers the same
+> fast/functional-simulator role these numbers represent. Kept below as a
+> historical record of what was measured before the switch.
 
 | RV width | Test/benchmark | Model | Arena | gem5 ticks | Simulated time |
 |---|---|---|---|---|---|
@@ -79,8 +85,8 @@ source /home/ajno5/work/2_pattern/tflm/script/0_env_var_setup.sh
 cd /home/ajno5/work/2_pattern/tflm/tflite-micro
 TOOLCHAIN_ARGS="TARGET_TOOLCHAIN_ROOT=$HOME/work/1_toolchain/xpack/xpack-riscv-none-elf-gcc-13.2.0-2/bin/ TARGET_TOOLCHAIN_PREFIX=riscv-none-elf-"
 
-# SE mode, RV64, gem5:
-make -f tensorflow/lite/micro/tools/make/Makefile TARGET=riscv64_generic SIMULATOR=gem5 $TOOLCHAIN_ARGS test_hello_world_test
+# SE mode, RV64, qemu (SIMULATOR=gem5 is disabled here — see above):
+make -f tensorflow/lite/micro/tools/make/Makefile TARGET=riscv64_generic $TOOLCHAIN_ARGS test_hello_world_test
 
 # FS mode, gem5 (default) or whisper:
 make -f tensorflow/lite/micro/tools/make/Makefile TARGET=riscv64_baremetal $TOOLCHAIN_ARGS test_dtln_test

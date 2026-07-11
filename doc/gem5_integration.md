@@ -18,6 +18,15 @@ See [`performance.md`](performance.md) for a consolidated table of every
 measured run (gem5 tick counts, whisper instruction counts, arena sizes) —
 this file covers the *why*, that one has just the numbers.
 
+> **Update:** gem5 SE mode (the `riscv{32,64}_generic` sections below) has
+> since been **disabled** — `SIMULATOR=gem5` now hits a `$(error ...)` on
+> those targets. Reasoning: `riscv64_baremetal` + `SIMULATOR=whisper` covers
+> the fast/functional-simulator role gem5 SE mode was filling, and gem5 FS
+> mode (`riscv64_baremetal`'s default) covers the cycle-accurate role — so
+> gem5 SE mode was redundant. The sections below are kept as-is (accurate
+> history of what was built/verified); see "gem5 SE mode disabled" further
+> down for the actual change.
+
 ## Environment blockers fixed first
 
 None of these are specific to gem5 — they blocked the existing
@@ -596,13 +605,50 @@ Re-verified after the fix, no regressions:
 | `hello_world_test` | gem5 + whisper | Unaffected either way (older macro style) — re-confirmed identical output/arena stats after the fix. |
 | `tflm_benchmark` (`person_detect.tflite`) | gem5 | Unaffected — identical `89,248 B` arena, same 30 ops, `tick 429485090000` (~429 ms, matches the ~422 ms from the pre-fix run within normal variance). |
 
+## gem5 SE mode disabled
+
+With `riscv64_baremetal` + `SIMULATOR=whisper` now verified (`hello_world_test`
+and `dtln_test`, both real passes — see above), the "fast, no-timing-model
+functional simulator" role is covered by whisper, and the "cycle-accurate"
+role is covered by gem5 FS mode (`riscv64_baremetal`'s default) — leaving
+gem5 SE mode on `riscv{32,64}_generic` without a distinct purpose it alone
+serves. Disabled rather than deleted: `riscv{32,64}_generic_makefile.inc`'s
+`SIMULATOR=gem5` branch now trips a `$(error ...)` with a message pointing
+at the replacement, instead of silently falling back to `qemu` (which could
+mask a stale `SIMULATOR=gem5` left in a command line/script) or being
+removed outright (which would lose the working, previously-debugged
+implementation — the two non-obvious gem5 API fixes documented above,
+`RiscvISA` word-size matching and the explicit `SEWorkload`, took real
+effort to find).
+
+```
+$ make ... TARGET=riscv64_generic SIMULATOR=gem5 test_hello_world_test
+tools/make/targets/riscv64_generic_makefile.inc:70: *** SIMULATOR=gem5 (SE mode) is
+disabled for riscv64_generic — use TARGET=riscv64_baremetal with SIMULATOR=whisper
+(fast, functional) or the default SIMULATOR=gem5 there (cycle-accurate FS mode)
+instead.  Stop.
+```
+
+`SIMULATOR=qemu` (the default, unchanged) still works exactly as before —
+confirmed via `test_hello_world_test` on `riscv64_generic` with no
+`SIMULATOR` override. (Separately, `qemu-riscv64` itself isn't currently
+installed/on `PATH` on this host — a pre-existing environment gap, not
+something this change touched or caused; `qemu-riscv32` was the only QEMU
+path previously confirmed actually running end-to-end in this environment,
+per "Verified working commands" above.)
+
+Nothing was deleted: `tensorflow/lite/micro/testing/test_with_gem5.sh` and
+`sim_config/gem5_riscv_se.py` are both still present, just unreferenced by
+any Makefile target now. `riscv64_baremetal` (gem5 FS mode + whisper) is
+untouched by this change.
+
 ## Known limitations / follow-ups not yet done
 
 - `keyword_benchmark` and `person_detection_benchmark` (the two dedicated
   benchmark binaries under `tensorflow/lite/micro/benchmarks/`, as opposed
-  to the generic `tflm_benchmark`) haven't been tried yet on
-  `riscv{32,64}_generic` under either simulator. The `SIMULATOR=gem5`
-  wiring should apply to them unchanged, but this is unverified.
+  to the generic `tflm_benchmark`) haven't been tried on `riscv{32,64}_generic`
+  under `qemu` (the only supported simulator there now — see "gem5 SE mode
+  disabled" above).
 - Per-op timing breakdowns are unusable on these targets (see above) —
   only whole-run gem5 tick counts are meaningful right now.
 - `TARGET_TOOLCHAIN_ROOT`/`TARGET_TOOLCHAIN_PREFIX` must be overridden by
