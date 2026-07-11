@@ -108,6 +108,80 @@ different board/simulator config.
 See `doc/gem5_integration.adoc` for the RV32 command form, `tflm_benchmark`
 usage, and everything else that's been verified.
 
+## Development / git workflow
+
+This repo is two independent git repositories, one nested inside the
+other's working tree — that's what a git submodule is. `tflite-micro/` has
+its own `.git`, its own remotes, its own history; the outer repo
+(`tflm_riscv`) doesn't store its content, only a pointer to one specific
+commit of it.
+
+```
+tflm_riscv/          outer repo — sim_config/, script/, doc/ (this README's
+│                     own remote: origin → tflm_riscv)
+└── tflite-micro/     inner repo — the actual TFLM source patches
+                       (own remotes: origin → your tflite-micro fork,
+                        upstream → the real tensorflow/tflite-micro)
+```
+
+Remotes, as set up:
+
+| Repo | `origin` | `upstream` |
+|---|---|---|
+| outer (`tflm_riscv`) | `https://github.com/<you>/tflm_riscv.git` | *(none)* |
+| inner (`tflite-micro`) | `https://github.com/<you>/tflite-micro.git` (your fork) | `https://github.com/tensorflow/tflite-micro.git` (real upstream) |
+
+Branch tracking: inner repo's `main` tracks `upstream/main` (stays a clean
+mirror — don't commit to it directly); do your own work on
+`gem5-riscv-integration` (or another feature branch), which tracks
+`origin/...` on your fork. Outer repo's `main` tracks `origin/main`.
+
+**To push a TFLM source change** (crt0, linker script, Makefile targets,
+test-runner scripts — anything under `tflite-micro/`):
+
+```bash
+cd tflite-micro
+git checkout gem5-riscv-integration   # not main
+# ... edit, git add, git commit ...
+git push                              # → your fork
+```
+
+**To push a config/doc change** (`sim_config/`, `script/`, `doc/`, or this
+README):
+
+```bash
+# from the outer repo root
+# ... edit, git add, git commit ...
+git push
+```
+
+**If you did both** (changed TFLM source *and* want the outer repo to
+reference the new commit), push the inner repo first, then stage the
+updated submodule pointer in the outer repo:
+
+```bash
+cd tflite-micro && git push && cd ..
+git add tflite-micro     # stages the new commit pointer, not file content
+git commit -m "Bump tflite-micro submodule"
+git push
+```
+
+Until that last step, `git status` in the outer repo will show
+`tflite-micro` as having "new commits" — that's expected, it just means the
+outer repo's pointer hasn't been bumped yet, not an error.
+
+**Syncing the fork with real upstream** (pulling in new tflite-micro
+releases): fetch/merge `upstream/main` into your feature branch from inside
+`tflite-micro/` — normal git, no submodule-specific steps needed:
+
+```bash
+cd tflite-micro
+git fetch upstream
+git checkout gem5-riscv-integration
+git merge upstream/main   # or rebase, if you prefer
+git push
+```
+
 ## License
 
 `tflite-micro` (the submodule) is Apache 2.0, from
