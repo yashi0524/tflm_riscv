@@ -1,0 +1,4 @@
+[submodule "tflite-micro"]
+	path = tflite-micro
+	url = https://github.com/yashi0524/tflite-micro.git
+	branch = gem5-riscv-integration
