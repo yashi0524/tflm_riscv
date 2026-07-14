@@ -18,20 +18,6 @@ instruction count (functional-only, no timing model — **not**
 comparable to gem5 ticks, just useful as a relative "how much work did
 this do" signal and for fast iteration).
 
-## `riscv{32,64}_generic` (SE / syscall-emulation mode, gem5) — historical, now disabled
-
-> `SIMULATOR=gem5` on these targets is now disabled (`$(error ...)`) — see
-> "gem5 SE mode disabled" in [`gem5_integration.md`](gem5_integration.md).
-> `riscv64_baremetal` + `SIMULATOR=whisper` covers the same
-> fast/functional-simulator role these numbers represent. Kept below as a
-> historical record of what was measured before the switch.
-
-| RV width | Test/benchmark | Model | Arena | gem5 ticks | Simulated time |
-|---|---|---|---|---|---|
-| RV32 | `hello_world_test` | hello_world (1 `FULLY_CONNECTED`) | 1,376 B | not recorded | not recorded |
-| RV64 | `hello_world_test` | hello_world (1 `FULLY_CONNECTED`) | 2,408 B | not recorded | not recorded |
-| RV64 | `tflm_benchmark` | `person_detect.tflite` (30 ops) | 89,248 B | 6,179,398,577,000 | 6.179 s |
-
 ## `riscv64_baremetal` (FS / bare-metal mode, gem5 — cycle-accurate `RiscvMinorCPU`)
 
 | Test/benchmark | Model | Arena | Binary size | gem5 ticks | Simulated time | Notes |
@@ -42,10 +28,11 @@ this do" signal and for fast iteration).
 | `tflm_benchmark` | `person_detect.tflite` (30 ops) | 89,248 B | — | 429,485,090,000 | ~429 ms | Post-`.init_array`-fix regression check; matches pre-fix 422,108,725,000 (~422 ms) within normal run-to-run variance |
 
 Note the FS-mode `tflm_benchmark` run (~422–429 ms) is roughly **14×
-faster simulated time** than the equivalent SE-mode run above (6.179 s)
-for the identical model/op sequence — not yet investigated why (could be
-FS mode's simpler system/cache config among other differences), so no
-conclusions should be drawn from that gap yet.
+faster simulated time** than the equivalent SE-mode run (6.179 s, see the
+historical SE-mode table at the bottom of this file) for the identical
+model/op sequence — not yet investigated why (could be FS mode's simpler
+system/cache config among other differences), so no conclusions should be
+drawn from that gap yet.
 
 ## `riscv64_baremetal` (whisper — functional-only RISC-V ISS, no timing model)
 
@@ -162,7 +149,8 @@ source /home/ajno5/work/2_pattern/tflm/script/0_env_var_setup.sh
 cd /home/ajno5/work/2_pattern/tflm/tflite-micro
 TOOLCHAIN_ARGS="TARGET_TOOLCHAIN_ROOT=$HOME/work/1_toolchain/xpack/xpack-riscv-none-elf-gcc-13.2.0-2/bin/ TARGET_TOOLCHAIN_PREFIX=riscv-none-elf-"
 
-# SE mode, RV64, qemu (SIMULATOR=gem5 is disabled here — see above):
+# SE mode, RV64, qemu (SIMULATOR=gem5 is disabled here — see the
+# historical SE-mode section at the bottom of this file):
 make -f tensorflow/lite/micro/tools/make/Makefile TARGET=riscv64_generic $TOOLCHAIN_ARGS test_hello_world_test
 
 # FS mode, gem5 (default) or whisper:
@@ -180,3 +168,17 @@ make -f tensorflow/lite/micro/tools/make/Makefile TARGET=riscv64_baremetal $TOOL
 # GENERIC_BENCHMARK_MODEL_PATH=tensorflow/lite/micro/models/person_detect.tflite
 # GENERIC_BENCHMARK_ARENA_SIZE=153600
 ```
+
+## `riscv{32,64}_generic` (SE / syscall-emulation mode, gem5) — historical, now disabled
+
+> `SIMULATOR=gem5` on these targets is now disabled (`$(error ...)`) — see
+> "gem5 SE mode disabled" in [`gem5_integration.md`](gem5_integration.md).
+> `riscv64_baremetal` + `SIMULATOR=whisper` covers the same
+> fast/functional-simulator role these numbers represent. Kept here as a
+> historical record of what was measured before the switch.
+
+| RV width | Test/benchmark | Model | Arena | gem5 ticks | Simulated time |
+|---|---|---|---|---|---|
+| RV32 | `hello_world_test` | hello_world (1 `FULLY_CONNECTED`) | 1,376 B | not recorded | not recorded |
+| RV64 | `hello_world_test` | hello_world (1 `FULLY_CONNECTED`) | 2,408 B | not recorded | not recorded |
+| RV64 | `tflm_benchmark` | `person_detect.tflite` (30 ops) | 89,248 B | 6,179,398,577,000 | 6.179 s |
