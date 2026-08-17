@@ -77,14 +77,14 @@ above).
 | | gem5 (cycle-accurate) | whisper (functional, no timing model) |
 |---|---|---|
 | Baseline `FULLY_CONNECTED` | 378,379 | 311,697 |
-| Vectorized `FULLY_CONNECTED` | 87,788 | 30,873 |
-| **Speedup** | **4.31×** | **10.09×** (not representative — see below) |
+| Vectorized `FULLY_CONNECTED` | 83,959 | 25,476 |
+| **Speedup** | **4.51×** | **12.24×** (not representative — see below) |
 | Baseline `UNIDIRECTIONAL_SEQUENCE_LSTM` (1st call) | 2,685,618 | 2,479,287 |
-| Vectorized `UNIDIRECTIONAL_SEQUENCE_LSTM` (1st call) | 621,580 | 221,910 |
-| **Speedup** | **4.32×** | **11.17×** |
+| Vectorized `UNIDIRECTIONAL_SEQUENCE_LSTM` (1st call) | 573,947 | 183,510 |
+| **Speedup** | **4.68×** | **13.51×** |
 | Baseline `UNIDIRECTIONAL_SEQUENCE_LSTM` (2nd call) | 1,845,791 | 1,688,145 |
-| Vectorized `UNIDIRECTIONAL_SEQUENCE_LSTM` (2nd call) | 435,055 | 183,513 |
-| **Speedup** | **4.24×** | **9.20×** |
+| Vectorized `UNIDIRECTIONAL_SEQUENCE_LSTM` (2nd call) | 394,316 | 157,913 |
+| **Speedup** | **4.68×** | **10.69×** |
 
 Output CRC32 (`0x7E578D1C`) identical to baseline in every case — verified
 correct, not just faster; also cross-validated against 3 other
@@ -92,10 +92,19 @@ FC/LSTM shapes entirely (`mnist_lstm`'s `trained_lstm_int8` — a genuinely
 different LSTM with a 28-timestep sequential call, not just a different
 shape; `micro_speech_quantized`'s extreme `K=4000,N=4` FC;
 `hello_world_int8`'s tiny `K=16,N=16` FC) — all matched their respective
-scalar-target baselines exactly. gem5's ~4.2–4.3× is the number to trust
+scalar-target baselines exactly. gem5's ~4.5–4.7× is the number to trust
 for each op; whisper's much larger speedups are inflated by having no
 cycle-accurate memory/pipeline model (can't capture the real cost of the
 vector loads), so don't read them as real-hardware expectations.
+
+These numbers include a second RVV fix on top of the offset-truncation one
+above: `Int8DotProductRvv`'s base `LMUL` was widened from `1` to `2`
+(`e8m2 -> e16m4 -> e32m8`, the widest feasible for this double-widening
+chain) after measuring 25-34% fewer cycles at `accum_depth >= 128` on a
+standalone probe — see "`Int8DotProductRvv`: widened from base `LMUL=1` to
+`LMUL=2`" in [`gem5_integration.md`](gem5_integration.md) for the
+shape-by-shape breakdown (small `accum_depth <= 28` sees a small ~4%
+*regression*, accepted since dtln's own shapes are all `>= 128`).
 
 Whole-model effect — now both `FULLY_CONNECTED` **and** the LSTM
 (~91% of total cycles) are vectorized:
@@ -104,12 +113,14 @@ Whole-model effect — now both `FULLY_CONNECTED` **and** the LSTM
 |---|---|---|
 | Baseline | 4,999,325 | 4,567,534 |
 | With vectorized FC only (historical intermediate step) | 4,369,141 | 4,281,314 |
-| With vectorized FC + LSTM | **1,233,600** | **524,701** |
-| **Whole-model speedup (FC + LSTM vs. baseline)** | **~4.05×** | **~8.71×** |
+| With vectorized FC + LSTM (offset fix only) | 1,233,600 | 524,701 |
+| With vectorized FC + LSTM (offset fix + `LMUL=2`) | **1,141,199** | **455,304** |
+| **Whole-model speedup (vs. baseline)** | **~4.38×** | **~10.03×** |
 
 Vectorizing FC alone only bought ~12.6% whole-model speedup, since the
-LSTM — the actual bulk of the work — was untouched. Vectorizing both is
-the win the roofline analysis below predicted was available.
+LSTM — the actual bulk of the work — was untouched. Vectorizing both, plus
+widening `LMUL`, is the win the roofline analysis below predicted was
+available.
 
 Target: `riscv64_baremetal_vector` (`-march=rv64imc_zicsr_zve64x`) — a
 separate `TARGET` from plain `riscv64_baremetal` deliberately, to avoid
@@ -205,32 +216,46 @@ for all three; the memory-bound ceiling (attainable performance) is
 `T = cycles / 1e9 s` (1 GHz clock); `P = FLOPs / T`; `efficiency = P /
 attainable`. Cycles from the per-op `MicroProfiler` table above — scalar
 rows from the `riscv64_baremetal` build, vectorized rows from
-`riscv64_baremetal_vector` with both the `FULLY_CONNECTED` and LSTM RVV
-fixes applied (GCC 13.4.0-1; see "Vectorized `FULLY_CONNECTED` and LSTM"
-above).
+`riscv64_baremetal_vector` with the `FULLY_CONNECTED`/LSTM correctness fix,
+the `LMUL=2` widening, and GCC 13.4.0-1 all applied (see "Vectorized
+`FULLY_CONNECTED` and LSTM" above).
 
 | | Cycles | T (µs) | P (MFLOP/s) | Efficiency vs. 25.6 GFLOP/s ceiling | Cycles/weight-byte |
 |---|---|---|---|---|---|
 | `FULLY_CONNECTED` (scalar baseline) | 378,176 | 378.18 | 173.97 | 0.68% | 11.50 |
-| `FULLY_CONNECTED` (vectorized) | 87,788 | 87.79 | 749.44 | 2.93% | 2.67 |
+| `FULLY_CONNECTED` (vectorized) | 83,959 | 83.96 | 783.62 | 3.06% | 2.55 |
 | LSTM 1st call (scalar) | 2,683,720 | 2683.72 | 146.90 | 0.57% | 13.61 |
-| LSTM 1st call (vectorized) | 621,580 | 621.58 | 634.25 | 2.48% | 3.15 |
+| LSTM 1st call (vectorized) | 573,947 | 573.95 | 686.89 | 2.68% | 2.91 |
 | LSTM 2nd call (scalar) | 1,845,580 | 1845.58 | 142.04 | 0.55% | 14.08 |
-| LSTM 2nd call (vectorized) | 435,055 | 435.06 | 602.55 | 2.35% | 3.32 |
+| LSTM 2nd call (vectorized) | 394,316 | 394.32 | 664.81 | 2.60% | 3.01 |
 
-**Verdict: real ~4.2–4.3× cycle-count wins per op, but still nowhere close
-to saturating the memory-bound ceiling.** Even fully vectorized, every op
-here reaches only ~2.3–2.9% of the 12.8 GB/s bandwidth-bound ceiling. This
-confirms the bottleneck being fixed here was never really DDR bandwidth;
-it's the in-order scalar pipeline's per-byte overhead (~11.5–14.1
-cycles/weight-byte scalar → ~2.7–3.3 cycles/byte vectorized, processing 64
-int8 elements/instruction instead of one). That still leaves the vast
-majority of headroom against peak DRAM bandwidth unused across the board —
-substantial further room (loop unrolling, prefetching, wider `LMUL`,
-precomputing the filter-derived row-sum once per `Invoke()` instead of
-recomputing it — see "Known limitations of this specific kernel" in
-`gem5_integration.md`) before bandwidth itself becomes the binding
-constraint for any of these ops.
+**Verdict: real ~4.5–4.7× cycle-count wins per op, but still nowhere close
+to saturating the memory-bound ceiling.** Even fully vectorized (correctness
+fix + `LMUL=2`), every op here reaches only ~2.6–3.1% of the 12.8 GB/s
+bandwidth-bound ceiling. This confirms the bottleneck being fixed here was
+never really DDR bandwidth; it's the in-order scalar pipeline's per-byte
+overhead (~11.5–14.1 cycles/weight-byte scalar → ~2.6–3.0 cycles/byte
+vectorized). That still leaves the vast majority of headroom against peak
+DRAM bandwidth unused across the board.
+
+**Why efficiency plateaus around here even with a correct, `LMUL`-widened
+kernel: `MinorCPU`'s single shared `FloatSimd` functional unit.**
+Investigated precisely why — see "Why efficiency stays low even after
+vectorization" in [`gem5_integration.md`](gem5_integration.md): every
+vector instruction (`vwadd`/`vwmul`/`vredsum`/`vwredsum` alike) competes
+for exactly one functional unit with 6-cycle result latency, and
+`MinorCPU`'s in-order pipeline has no out-of-order execution to hide that
+latency across the loop's dependency chain (`load -> widen ->
+widen-multiply -> reduce`). Confirmed with a diagnostic experiment (a
+second `FloatSimd` FU instance, via a config copied from the sibling
+`softmax` project): real further speedup (10-21% more, compounding with
+`LMUL=2`) — but not applied to this project's default board, since it
+changes what CPU is being modeled, not how well the code uses the modeled
+CPU. Loop unrolling and a vector-accumulate-then-reduce-once restructuring
+were also tried and measured **not** to help for this project's actual
+shapes (see `gem5_integration.md`) — precomputing the filter-derived
+row-sum once per `Invoke()` instead of every call remains untried (see
+"Known limitations of this specific kernel" there).
 
 **LSTM vectorization: achieved.** What blocked this in an earlier pass —
 a genuine correctness bug in `Int8DotProductRvv` (an offset-value-`128`

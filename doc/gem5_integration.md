@@ -965,6 +965,131 @@ tarball are left in place alongside the new one (`1_toolchain/xpack/`, both
 versions present) rather than removed, in case anything else in the
 project turns out to depend on the exact older version.
 
+### `Int8DotProductRvv`: widened from base `LMUL=1` to `LMUL=2`
+
+Follow-up after the correctness fix above: with `Int8DotProductRvv`
+correct, checked whether wider `LMUL` closes any of the gap to the
+roofline's peak-compute ceiling (`performance_dtln.md`'s "Achieved
+performance" table still showed only ~2.3-2.9% efficiency post-fix).
+`e8m2 -> e16m4 -> e32m8` is the widest feasible base LMUL for this
+double-widening chain — a third step (base `m4`) would need `m16` for the
+second widen, which doesn't exist (RVV's max `LMUL` is 8).
+
+Measured on gem5 across every `accum_depth` this project's models actually
+use: **25-34% fewer cycles for `accum_depth >= 128`** (dtln's FC/LSTM
+shapes: 128, 257; `micro_speech`'s FC: 4000) since a wider load/widen/
+multiply processes more elements per instruction, directly cutting loop
+iteration count; **~4% *more* cycles for `accum_depth <= 28`**
+(`mnist_lstm`'s LSTM gates: 20, 28; `hello_world`'s FC: 16) — those already
+complete in a single vector op at `LMUL=1` (`VLMAX=64` for `e8` at
+`VLEN=512`), so `LMUL=2` there only adds fixed per-instruction overhead
+with no iteration-count reduction to offset it. Applied unconditionally
+(no runtime branch on `accum_depth`) since dtln — the standing benchmark —
+is entirely `accum_depth in {128, 257}`, both net wins; the small
+regression on the other models' already-cheap small-K gates was accepted
+rather than adding branch complexity to the hot path. Re-validated against
+all 4 models from the correctness-fix validation above (dtln, `mnist_lstm`,
+`micro_speech_quantized`, `hello_world_int8`) — all CRC32s still match.
+See `performance_dtln.md` for the resulting cycle counts.
+
+Also tried accumulating the widening-multiply's result in a *vector*
+register across loop iterations (instead of a full horizontal `vredsum`
+every iteration) and reducing only once at the end — the more
+theoretically appealing fix for the "redundant reduces" pattern. Measured
+**worse** for every shape `<=257` (32-84% *more* cycles) and only better
+for `accum_depth=4000` (17% fewer) — the accumulator version pays fixed
+setup cost (an extra `vsetvl` plus three `vmv.v.x` zero-inits) on every
+call regardless of iteration count, and none of this project's actual
+shapes have enough iterations to amortize that against the saved reduces.
+Not applied.
+
+### Why efficiency stays low even after vectorization: `MinorCPU`'s single shared `FloatSimd` functional unit
+
+Investigated why the roofline's "achieved performance" numbers stay in the
+low single-digit percent of the peak-compute ceiling even with a correct,
+`LMUL`-widened vectorized kernel. Root cause is in gem5's default
+`MinorCPU` functional-unit pool
+(`src/cpu/minor/BaseMinorCPU.py:172-294`, unmodified by
+`sim_config/gem5_riscv_baremetal_fs.py` — it just instantiates
+`RiscvMinorCPU()` with no FU pool override):
+
+- `MinorDefaultFloatSimdFU` covers essentially every SIMD/vector op class,
+  including `SimdAdd`/`SimdMult` (our `vwadd`/`vwmul`) and `SimdReduceAdd`
+  (our `vredsum`/`vwredsum`) — and there is exactly **one instance** of it
+  in `MinorDefaultFUPool`, vs. two `MinorDefaultIntFU`s for plain scalar
+  ops. Every vector instruction in the kernel's inner loop competes for
+  this single unit.
+- It has `opLat = 6` (6-cycle result latency) but the default
+  `issueLat = 1` (can *accept* a new instruction every cycle) — so it's
+  not simply serialized at 1-per-6-cycles; it's pipelined for throughput.
+- The actual bottleneck is that `MinorCPU` is a **simple in-order
+  pipeline** with no out-of-order execution to hide dependency latency.
+  The kernel's loop body is a strict chain — `load -> widen ->
+  widen-multiply -> reduce` — 3-4 deep, and each step must wait out the
+  full 6-cycle latency of the one before it before it can even issue. That
+  compounds to ~18-24+ cycles of pure latency per iteration, even though
+  the FU itself could theoretically accept unrelated work every cycle.
+  `vredsum`/`vwredsum` aren't intrinsically slower than any other vector
+  op here — they just sit at the end of the chain, so their latency is
+  what the scalar accumulation (`dot +=` etc.) visibly waits on.
+- Confirmed `RiscvMinorCPU()`'s defaults are **dual-issue**
+  (`decodeInputWidth`/`executeInputWidth`/`executeIssueLimit`/
+  `executeCommitLimit` all default to `2`,
+  `src/cpu/minor/BaseMinorCPU.py:359-386`) — but that dual-issue front end
+  is mostly wasted on vector-heavy code like this kernel, since at most 1
+  of the 2 instructions issued per cycle can be *any* SIMD/vector op
+  (loads/stores go through the separate `MemFU`), with only one FU to
+  issue it into.
+
+**Experiment: does a second `FloatSimd` FU help?** The sibling `softmax`
+project already has exactly this diagnostic knob built (unused there too —
+checked its `run_log.txt`/`doc/softmax_analysis.md`, every recorded run
+used the default 1 FU) in
+[`sim_config/gem5_riscv_demo_riscv_baremetal_semihost_minor.py`](../sim_config/gem5_riscv_demo_riscv_baremetal_semihost_minor.py)
+(copied here from `/home/ajno5/work/2_pattern/softmax_cpp/sim_config/` —
+otherwise identical board to `gem5_riscv_baremetal_fs.py`): a
+`CustomMinorFUPool` reading `MINOR_FLOAT_FU_COUNT` from the environment
+(default `1`) to instantiate that many `MinorDefaultFloatSimdFU` copies.
+Ran the `LMUL` probe from above against it with `MINOR_FLOAT_FU_COUNT=2`:
+
+| `accum_depth` | 1 FU, `LMUL=1` cycles | 1 FU, `LMUL=2` cycles | 2 FU, `LMUL=1` cycles | 2 FU, `LMUL=2` cycles |
+|---|---|---|---|---|
+| 16 | 56 | 58 | 56 (0%) | 58 (0%) |
+| 20 | 58 | 60 | 56 (3.4%) | 58 (3.3%) |
+| 28 | 58 | 60 | 56 (3.4%) | 58 (3.3%) |
+| 128 | 101 | 80 | 87 (**13.9%**) | 67 (**16.3%**) |
+| 257 | 273 | 217 | 244 (**10.6%**) | 187 (**13.8%**) |
+| 4000 | 2436 | 1812 | 1997 (**18.0%**) | 1439 (**20.6%**) |
+
+A second FU gives another real, meaningful speedup that **compounds with**
+`LMUL=2` rather than substituting for it — same shape-dependent pattern
+(tiny `K` has too little independent work to spread across 2 FUs; larger
+`K` benefits more as there's more to overlap). Correctness re-verified
+(`m1_match`/`m2_match` both `1` for every depth, both FU counts).
+
+**Not applied to the project's default board.** Unlike `LMUL`, this is a
+simulated-hardware-model decision, not a kernel optimization — it changes
+what CPU we're claiming to benchmark against (2x the vector execution
+resources), not how well our code uses the CPU we already modeled.
+`sim_config/gem5_riscv_baremetal_fs.py` (the default board every other
+number in this project is measured against) is untouched;
+`gem5_riscv_demo_riscv_baremetal_semihost_minor.py` stays available as an
+opt-in diagnostic config, kept purely as a documented experiment. No new
+`TARGET` is needed to use it — `TARGET` governs the compiled binary
+(`-march=`/linker script/`GENDIR`), which this experiment doesn't touch at
+all; only `test_with_gem5_fs.sh`'s `GEM5_FS_CONFIG` env var (independent
+of `TARGET`, defaults to `gem5_riscv_baremetal_fs.py`) needs overriding to
+point at this file, against the exact same `riscv64_baremetal_vector`
+binaries already built:
+
+```bash
+GEM5_FS_CONFIG=/home/ajno5/work/2_pattern/tflm/sim_config/gem5_riscv_demo_riscv_baremetal_semihost_minor.py \
+MINOR_FLOAT_FU_COUNT=2 \
+tensorflow/lite/micro/testing/test_with_gem5_fs.sh riscv64 minor \
+  gen/riscv64_baremetal_vector_aarch64_default_gcc/bin/tflm_benchmark \
+  non_test_binary riscv64_baremetal_vector
+```
+
 ## Known limitations / follow-ups not yet done
 
 - `keyword_benchmark` and `person_detection_benchmark` (the two dedicated
