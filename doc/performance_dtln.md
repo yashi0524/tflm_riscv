@@ -213,30 +213,65 @@ for all three; the memory-bound ceiling (attainable performance) is
 
 ### Achieved performance vs. the roofline (gem5, cycle-accurate)
 
-`T = cycles / 1e9 s` (1 GHz clock); `P = FLOPs / T`; `efficiency = P /
-attainable`. Cycles from the per-op `MicroProfiler` table above — scalar
-rows from the `riscv64_baremetal` build, vectorized rows from
-`riscv64_baremetal_vector` with the `FULLY_CONNECTED`/LSTM correctness fix,
-the `LMUL=2` widening, and GCC 13.4.0-1 all applied (see "Vectorized
-`FULLY_CONNECTED` and LSTM" above).
+`T = cycles / 1e9 s` (1 GHz clock); `P = FLOPs / T`. Cycles from the
+per-op `MicroProfiler` table above — scalar rows from the
+`riscv64_baremetal` build, vectorized rows from `riscv64_baremetal_vector`
+with the `FULLY_CONNECTED`/LSTM correctness fix, the `LMUL=2` widening,
+and GCC 13.4.0-1 all applied (see "Vectorized `FULLY_CONNECTED` and LSTM"
+above).
 
-| | Cycles | T (µs) | P (MFLOP/s) | Efficiency vs. 25.6 GFLOP/s ceiling | Cycles/weight-byte |
+**The `25.6 GFLOP/s` memory-bound "ceiling" this table originally used
+was wrong — not just imprecise, the wrong *kind* of ceiling for this
+CPU.** `AI × peak_BW` (`2.0 × 12.8 GB/s`) is a valid *upper* bound only if
+the core can actually keep DRAM saturated. It can't: `MinorCPU` has
+exactly one shared `FloatSimd` functional unit (6-cycle result latency,
+in-order pipeline, no out-of-order execution to hide dependency-chain
+stalls — see "Why efficiency stays low" below) that throttles achievable
+throughput to something far below what DRAM could sustain, for this
+kernel's specific instruction mix. Standard roofline analysis (compute
+ceiling vs. memory-bandwidth ceiling) doesn't model this third,
+lower, core-issue/latency-bound failure mode at all.
+
+**Measured the real ceiling empirically instead of assuming it** — same
+methodology the sibling `gemm` project uses for its own `fmacc.c` compute
+roof (measure, don't assume): built
+[`../microbenchmark/int8dot_ceiling.c`](../microbenchmark/int8dot_ceiling.c),
+an independent-3-chain-unrolled microbenchmark replicating
+`Int8DotProductRvv`'s actual instruction sequence (`vle8` → `vwadd` ×2 →
+`vwmul` → `vredsum`, `LMUL=2`) with enough parallel chains to overlap the
+`FloatSimd` FU's 6-cycle latency, without over-subscribing RVV's 32
+physical vector registers (an 8-chain first attempt needed up to 64
+registers at this kernel's `LMUL=2`, forcing heavy spill/reload traffic
+that swamped the actual measurement — 3 chains was the largest count that
+fit cleanly). **Result on gem5, GCC 13.4.0-1 (the authoritative figure —
+this project's actual kernel is GCC-built; see "Investigating clang as an
+alternative toolchain" in `gem5_integration.md` for why clang isn't used
+here despite giving a similar, slightly lower number in a cross-check):
+206 cycles/iteration, 3.723 GFLOP/s.**
+
+| | Cycles | T (µs) | P (MFLOP/s) | Efficiency vs. 3.723 GFLOP/s measured ceiling | Cycles/weight-byte |
 |---|---|---|---|---|---|
-| `FULLY_CONNECTED` (scalar baseline) | 378,176 | 378.18 | 173.97 | 0.68% | 11.50 |
-| `FULLY_CONNECTED` (vectorized) | 83,959 | 83.96 | 783.62 | 3.06% | 2.55 |
-| LSTM 1st call (scalar) | 2,683,720 | 2683.72 | 146.90 | 0.57% | 13.61 |
-| LSTM 1st call (vectorized) | 573,947 | 573.95 | 686.89 | 2.68% | 2.91 |
-| LSTM 2nd call (scalar) | 1,845,580 | 1845.58 | 142.04 | 0.55% | 14.08 |
-| LSTM 2nd call (vectorized) | 394,316 | 394.32 | 664.81 | 2.60% | 3.01 |
+| `FULLY_CONNECTED` (scalar baseline) | 378,176 | 378.18 | 173.97 | 4.67% | 11.50 |
+| `FULLY_CONNECTED` (vectorized) | 83,959 | 83.96 | 783.62 | 21.05% | 2.55 |
+| LSTM 1st call (scalar) | 2,683,720 | 2683.72 | 146.90 | 3.94% | 13.61 |
+| LSTM 1st call (vectorized) | 573,947 | 573.95 | 686.89 | 18.45% | 2.91 |
+| LSTM 2nd call (scalar) | 1,845,580 | 1845.58 | 142.04 | 3.81% | 14.08 |
+| LSTM 2nd call (vectorized) | 394,316 | 394.32 | 664.81 | 17.86% | 3.01 |
 
-**Verdict: real ~4.5–4.7× cycle-count wins per op, but still nowhere close
-to saturating the memory-bound ceiling.** Even fully vectorized (correctness
-fix + `LMUL=2`), every op here reaches only ~2.6–3.1% of the 12.8 GB/s
-bandwidth-bound ceiling. This confirms the bottleneck being fixed here was
-never really DDR bandwidth; it's the in-order scalar pipeline's per-byte
-overhead (~11.5–14.1 cycles/weight-byte scalar → ~2.6–3.0 cycles/byte
-vectorized). That still leaves the vast majority of headroom against peak
-DRAM bandwidth unused across the board.
+**Verdict: the vectorized kernel is already within ~5× of what this CPU
+can genuinely sustain for this instruction mix, not 30-40× short of it.**
+That's a fundamentally different picture than the old (wrong) `25.6
+GFLOP/s`-based numbers implied (~2.6-3.1%, suggesting the vast majority
+of headroom was still on the table). The real, measured ceiling — ~18-21%
+efficiency for the vectorized ops — is consistent with the sibling `gemm`
+project's own finding that even a carefully hand-optimized kernel with
+broken dependency chains and minimized memory traffic (`opt_gemm_blocked`)
+still only reaches ~6-12% of *its* measured compute roof, since per-call
+fixed costs and loop overhead persist regardless of vectorization quality.
+This kernel actually does comparably or better. Cycles/weight-byte still
+drops sharply from vectorization (~11.5-14.1 → ~2.6-3.0) — that part of
+the original analysis was correct and unaffected by the ceiling fix; only
+the *denominator being compared against* was wrong.
 
 **Why efficiency plateaus around here even with a correct, `LMUL`-widened
 kernel: `MinorCPU`'s single shared `FloatSimd` functional unit.**

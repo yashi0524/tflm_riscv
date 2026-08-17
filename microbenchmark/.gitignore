@@ -1,0 +1,3 @@
+# Build artifacts (see int8dot_ceiling.c's header comment for build commands)
+*.o
+*_riscv

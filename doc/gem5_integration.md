@@ -1090,6 +1090,63 @@ tensorflow/lite/micro/testing/test_with_gem5_fs.sh riscv64 minor \
   non_test_binary riscv64_baremetal_vector
 ```
 
+### Measuring the real ceiling: `microbenchmark/int8dot_ceiling.c`
+
+The `25.6 GFLOP/s` memory-bound figure the roofline analysis originally
+used as "the ceiling" was itself wrong — not imprecise, the wrong *kind*
+of bound for this CPU. `AI × peak_BW` only holds as an upper bound if the
+core can actually saturate DRAM; `MinorCPU`'s single-`FloatSimd`-FU
+bottleneck above means it structurally can't, for this instruction mix.
+Rather than derive a corrected ceiling analytically, measured it directly
+— same "measure, don't assume" methodology the sibling `gemm` project
+uses for its own `fmacc.c` compute roof.
+
+**[`microbenchmark/int8dot_ceiling.c`](../microbenchmark/int8dot_ceiling.c)**
+replicates `Int8DotProductRvv`'s actual instruction sequence (`vle8` →
+`vwadd` ×2 → `vwmul` → `vredsum`, `LMUL=2`) across `N` independent chains,
+hand-interleaved (all loads, then all widens, then all multiplies, then
+all reduces) so the in-order pipeline has genuinely independent work to
+issue while any one chain's 6-cycle latency is in flight.
+
+**First attempt (8 chains, mirroring `gemm`'s `fmacc.c` 8-way unroll)
+measured a physically impossible >800 GFLOP/s** — the compiler had
+recognized every iteration reads identical unchanging buffers and
+hoisted/CSE'd the entire computation out of the loop. Fixed by perturbing
+one byte per chain each iteration with an optimizer-opaque value (a
+lighter-weight fix than a blanket memory-clobber barrier, which was tried
+first and found to add its own spill overhead).
+
+**With that fixed, 8 chains still measured far worse than expected
+(~1360 cycles/iteration) — register pressure, not FU latency, turned out
+to be the actual bottleneck in that version.** At this kernel's `LMUL=2`
+base, the widest intermediate type is `vint32m8_t` (8 physical vector
+registers). With 8 chains needing this simultaneously live at the
+multiply stage, that's `8×8=64` registers required against only 32 that
+exist — confirmed via disassembly (20 whole-register spill/reload
+instructions). **`NCHAINS=3`** keeps peak simultaneous use at `3×8=24`
+(multiply stage), comfortably under 32 with no spilling — the largest
+chain count that fits cleanly at this `LMUL`.
+
+**Result — GCC 13.4.0-1, gem5 (cycle-accurate): 206 cycles/iteration,
+3.723 GFLOP/s.** This is the authoritative figure used in
+`performance_dtln.md`'s roofline efficiency table, since the project's
+actual kernel is GCC-built. Cross-checked against clang-18 for the same
+source (see "Investigating clang as an alternative toolchain" below):
+278 cycles/iteration, 2.760 GFLOP/s — same order of magnitude (confirms
+this reflects a genuine hardware-bound ceiling, not a compiler artifact
+of either toolchain), GCC ~35% faster for this exact code, consistent
+with GCC being the toolchain this project's real kernel already uses.
+Both produce identical `sink` values (`-361804616`), confirming
+correctness on both.
+
+Against this real, measured ceiling instead of the wrong `25.6 GFLOP/s`
+figure, the vectorized kernel's efficiency comes out to ~18-21% (was
+~2.6-3.1% against the wrong ceiling) — meaning it's already within ~5× of
+what this CPU can genuinely sustain for this op mix, not 30-40× short of
+it. See `performance_dtln.md`'s "Achieved performance vs. the roofline"
+section for the full corrected table and comparison against the sibling
+`gemm` project's own efficiency findings.
+
 ### Investigating clang as an alternative toolchain: builds clean, but crashes gem5 on the full `dtln` model
 
 While cross-validating the roofline ceiling probe against both compilers
