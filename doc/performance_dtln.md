@@ -283,10 +283,19 @@ for exactly one functional unit with 6-cycle result latency, and
 latency across the loop's dependency chain (`load -> widen ->
 widen-multiply -> reduce`). Confirmed with a diagnostic experiment (a
 second `FloatSimd` FU instance, via a config copied from the sibling
-`softmax` project): real further speedup (10-21% more, compounding with
-`LMUL=2`) — but not applied to this project's default board, since it
-changes what CPU is being modeled, not how well the code uses the modeled
-CPU. Loop unrolling and a vector-accumulate-then-reduce-once restructuring
+`softmax` project): a synthetic probe at this kernel's exact instruction
+mix showed a real 10-21% speedup — but re-running the actual `dtln`
+kernel under the same 2-FU config (not just the probe) showed only a
+4.60% whole-model cycle reduction, with efficiency against the
+correctly-rescaled 2-FU ceiling (4.510 vs. 3.723 GFLOP/s) actually
+*lower* than at 1 FU, not higher — Amdahl's Law: the real kernel spends
+much of its time on scalar work (bias add, requantization, activation
+clamping, LSTM gate logic) the FU count can't help. See "Correction: the
+2-FU experiment helps the real kernel much less than the synthetic probe
+suggested" in `gem5_integration.md` for the full breakdown. Not applied
+to this project's default board either way, since it changes what CPU is
+being modeled, not how well the code uses the modeled CPU. Loop unrolling
+and a vector-accumulate-then-reduce-once restructuring
 were also tried and measured **not** to help for this project's actual
 shapes (see `gem5_integration.md`) — precomputing the filter-derived
 row-sum once per `Invoke()` instead of every call remains untried (see

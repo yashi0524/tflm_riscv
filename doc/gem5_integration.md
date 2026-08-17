@@ -1147,6 +1147,50 @@ it. See `performance_dtln.md`'s "Achieved performance vs. the roofline"
 section for the full corrected table and comparison against the sibling
 `gemm` project's own efficiency findings.
 
+### Correction: the 2-FU experiment helps the real kernel much less than the synthetic probe suggested
+
+The `MINOR_FLOAT_FU_COUNT=2` experiment above was only ever run against
+the synthetic `LMUL` comparison probe (a standalone loop doing nothing but
+the dot-product chain repeatedly), which showed 14-21% fewer cycles at the
+shapes `dtln` actually uses. Two things needed checking before trusting
+that number for the real kernel: (1) does the *ceiling* itself also move
+with 2 FUs (yes — see above, `int8dot_ceiling.c` goes from 3.723 to
+**4.510 GFLOP/s**, +21.2%, so any 2-FU real-kernel comparison needs to be
+against this ceiling, not the 1-FU one), and (2) does the real kernel —
+which does much more per call than the isolated dot-product loop — see
+the same proportional benefit at all.
+
+Re-ran the actual `dtln_noise_suppression` benchmark (GCC-built, same
+binary, only `GEM5_FS_CONFIG`/`MINOR_FLOAT_FU_COUNT` changed — no
+rebuild) under both configs:
+
+| | 1 FU cycles | 2 FU cycles | Cycle reduction | Efficiency @ 1 FU ceiling (3.723 GFLOP/s) | Efficiency @ 2 FU ceiling (4.510 GFLOP/s) |
+|---|---|---|---|---|---|
+| `FULLY_CONNECTED` | 70,821 | 66,381 | 6.27% | 24.95% | **21.98%** |
+| LSTM 1st call | 578,992 | 546,394 | 5.63% | 18.29% | **16.00%** |
+| LSTM 2nd call | 394,771 | 379,911 | 3.76% | 17.84% | **15.30%** |
+| **Whole-model** | 1,133,683 | 1,081,537 | **4.60%** | — | — |
+
+**The real kernel gets roughly a third of what the synthetic probe
+predicted (4.6% whole-model vs. 14-21% for the probe at the same
+shapes), and relative efficiency against the correctly-scaled ceiling
+actually goes *down* slightly, not up.** This is Amdahl's Law: the real
+kernel's cycle count includes a lot that never touches the `FloatSimd`
+FU at all — bias addition, quantization-multiplier rescaling, activation
+min/max clamping, LSTM's gate-combination/cell-state logic, function-call
+and loop overhead, all scalar `IntALU`/`MemFU` work unaffected by a 2nd
+vector FU. `int8dot_ceiling.c` is almost pure FU-bound compute by design
+(that's the point of a ceiling probe), so it isn't diluted by any of this
+and gets close to the full benefit; the real kernel is. Since the ceiling
+itself grew *more* (21.2%) than the real kernel's achieved performance did
+(~6-9%), efficiency-against-ceiling nets out lower with 2 FUs, not higher.
+
+**Conclusion: the 2-FU hardware-model change is a weaker lever for this
+project's actual workload than the synthetic probe alone suggested.**
+Doesn't change the "not applied to the default board" decision above —
+if anything, this is a further reason not to, since the real payoff is
+smaller than it first looked.
+
 ### Investigating clang as an alternative toolchain: builds clean, but crashes gem5 on the full `dtln` model
 
 While cross-validating the roofline ceiling probe against both compilers
