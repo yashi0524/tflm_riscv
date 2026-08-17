@@ -1,0 +1,16 @@
+#!/bin/bash
+# C++ counterpart to ./riscv-none-elf-gcc -- see that file's header
+# comment for the full explanation. Adds explicit libstdc++ -I paths on
+# top (clang's toolchain auto-detection doesn't find them for this
+# non-standard triple naming). Same pinned-to-13.4.0-1/rv64im/lp64
+# caveat applies.
+args=()
+for a in "$@"; do
+  if [ "$a" = "-mexplicit-relocs" ]; then continue; fi
+  args+=("$a")
+done
+exec clang++-18 --target=riscv64-unknown-elf \
+  --sysroot=/home/ajno5/work/1_toolchain/xpack/xpack-riscv-none-elf-gcc-13.4.0-1/riscv-none-elf --gcc-toolchain=/home/ajno5/work/1_toolchain/xpack/xpack-riscv-none-elf-gcc-13.4.0-1 \
+  -B/home/ajno5/work/1_toolchain/xpack/xpack-riscv-none-elf-gcc-13.4.0-1/riscv-none-elf/lib/rv64im/lp64 -B/home/ajno5/work/1_toolchain/xpack/xpack-riscv-none-elf-gcc-13.4.0-1/lib/gcc/riscv-none-elf/13.4.0/rv64im/lp64 -L/home/ajno5/work/1_toolchain/xpack/xpack-riscv-none-elf-gcc-13.4.0-1/riscv-none-elf/lib/rv64im/lp64 -L/home/ajno5/work/1_toolchain/xpack/xpack-riscv-none-elf-gcc-13.4.0-1/lib/gcc/riscv-none-elf/13.4.0/rv64im/lp64 -fuse-ld=lld-18 \
+  -I/home/ajno5/work/1_toolchain/xpack/xpack-riscv-none-elf-gcc-13.4.0-1/riscv-none-elf/include/c++/13.4.0 -I/home/ajno5/work/1_toolchain/xpack/xpack-riscv-none-elf-gcc-13.4.0-1/riscv-none-elf/include/c++/13.4.0/riscv-none-elf/rv64im/lp64 \
+  "${args[@]}"

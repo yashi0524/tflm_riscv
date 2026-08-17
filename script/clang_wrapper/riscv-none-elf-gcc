@@ -1,0 +1,34 @@
+#!/bin/bash
+# Stands in for xPack's riscv-none-elf-gcc, backed by clang-18/lld-18
+# instead of GCC -- point TARGET_TOOLCHAIN_ROOT at this directory
+# (containing this file, riscv-none-elf-g++, and symlinks to the real
+# xPack toolchain's ar/objcopy/objdump/size/nm/ranlib/strip -- those are
+# toolchain-agnostic binutils, no reason to reimplement them) to build
+# any riscv64_baremetal_vector TFLM target with clang instead of GCC.
+# Verified: the entire TFLM kernel library (hundreds of files) compiles
+# clean under clang-18 with zero source-level changes needed -- only
+# these wrapper-level fixes were required: (1) drop -mexplicit-relocs
+# (GCC-specific, clang doesn't recognize/need it), (2) explicit
+# libstdc++ -I paths in the g++ wrapper (clang's --gcc-toolchain=
+# auto-detection keys off --target= matching the on-disk triple name;
+# riscv64-unknown-elf doesn't match this toolchain's actual
+# riscv-none-elf naming, so it silently finds no C++ headers), (3)
+# explicit -L paths so the linker finds -lgcc/-lc/-lm (clang doesn't
+# know this specific GCC toolchain's lib layout the way real gcc does
+# internally). test_hello_world_test built and ran correctly under
+# gem5 end-to-end with this wrapper -- see doc/gem5_integration.md.
+#
+# NOTE: paths below are pinned to GCC 13.4.0-1's install layout (the
+# project's toolchain as of this writing) and the rv64im/lp64 multilib
+# riscv64_baremetal_vector's -march=rv64imc_zicsr_zve64x resolves to --
+# regenerate (new -B/-L/-I paths, new binutils symlinks) if the project
+# toolchain version changes.
+args=()
+for a in "$@"; do
+  if [ "$a" = "-mexplicit-relocs" ]; then continue; fi
+  args+=("$a")
+done
+exec clang-18 --target=riscv64-unknown-elf \
+  --sysroot=/home/ajno5/work/1_toolchain/xpack/xpack-riscv-none-elf-gcc-13.4.0-1/riscv-none-elf --gcc-toolchain=/home/ajno5/work/1_toolchain/xpack/xpack-riscv-none-elf-gcc-13.4.0-1 \
+  -B/home/ajno5/work/1_toolchain/xpack/xpack-riscv-none-elf-gcc-13.4.0-1/riscv-none-elf/lib/rv64im/lp64 -B/home/ajno5/work/1_toolchain/xpack/xpack-riscv-none-elf-gcc-13.4.0-1/lib/gcc/riscv-none-elf/13.4.0/rv64im/lp64 -L/home/ajno5/work/1_toolchain/xpack/xpack-riscv-none-elf-gcc-13.4.0-1/riscv-none-elf/lib/rv64im/lp64 -L/home/ajno5/work/1_toolchain/xpack/xpack-riscv-none-elf-gcc-13.4.0-1/lib/gcc/riscv-none-elf/13.4.0/rv64im/lp64 -fuse-ld=lld-18 \
+  "${args[@]}"

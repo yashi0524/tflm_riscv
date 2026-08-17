@@ -1090,6 +1090,106 @@ tensorflow/lite/micro/testing/test_with_gem5_fs.sh riscv64 minor \
   non_test_binary riscv64_baremetal_vector
 ```
 
+### Investigating clang as an alternative toolchain: builds clean, but crashes gem5 on the full `dtln` model
+
+While cross-validating the roofline ceiling probe against both compilers
+(see the ceiling-microbenchmark work above), the question came up of
+whether TFLM's actual `riscv64_baremetal_vector` build — not just small
+standalone probes — could also be compiled with clang instead of GCC
+13.4.0-1.
+
+**Flag compatibility: only one GCC-specific flag.** Tested every flag in
+`riscv64_baremetal_vector_makefile.inc`'s `PLATFORM_FLAGS` plus the
+project's base `CXXFLAGS`/`CCFLAGS` individually against `clang-18`.
+Every single one compiled clean except `-mexplicit-relocs`
+(`clang-18: error: unknown argument`) — a GCC-specific flag clang doesn't
+recognize and doesn't need.
+
+**Built wrapper scripts** (`script/clang_wrapper/riscv-none-elf-{gcc,g++}`)
+standing in for the real toolchain, so `TARGET_TOOLCHAIN_ROOT` can point at
+them with zero changes to TFLM's actual `Makefile`/`Makefile.inc` files.
+Three fixes were needed beyond dropping `-mexplicit-relocs`:
+- **Explicit libstdc++ `-I` paths.** clang's `--gcc-toolchain=` GCC
+  auto-detection keys off `--target=` matching the on-disk toolchain
+  triple name; `riscv64-unknown-elf` doesn't match this toolchain's actual
+  `riscv-none-elf` naming, so the scan silently finds no C++ headers at
+  all (`fatal error: 'utility' file not found` was the first symptom) --
+  same underlying gotcha the sibling `softmax_cpp` project's `Makefile`
+  already documents for its own clang usage.
+- **Explicit `-L` paths at link time**, so the linker finds
+  `-lgcc`/`-lc`/`-lm` — clang doesn't know this specific GCC toolchain's
+  library layout the way real `gcc` does internally
+  (`ld.lld-18: error: unable to find library -lgcc` otherwise).
+- **Symlinked the real binutils** (`ar`, `objcopy`, `objdump`, `size`,
+  `nm`, `ranlib`, `strip`) into the wrapper directory — these are
+  toolchain-agnostic GNU tools, no reason to reimplement them; TFLM's
+  `Makefile` resolves them via the same `TARGET_TOOLCHAIN_ROOT` +
+  `TARGET_TOOLCHAIN_PREFIX` mechanism as `CC`/`CXX`.
+- Both multilib/target-specific `-B`/`-L`/`-I` paths are pinned to GCC
+  13.4.0-1's install layout and the `rv64im/lp64` multilib
+  `-march=rv64imc_zicsr_zve64x` resolves to (matching what
+  `-print-multi-directory` reports) — see the wrapper scripts' own header
+  comments for the full explanation and the regenerate-if-toolchain-
+  changes caveat.
+
+**Result: the entire TFLM kernel library compiles clean under clang —
+zero source-level changes needed anywhere.** Hundreds of `.cc`/`.c` files
+across the whole `libtensorflow-microlite.a` build, only harmless warnings
+(`-Wdouble-promotion`, an unrecognized `#pragma GCC diagnostic` warning
+group in a vendored dependency). `test_hello_world_test` built, linked,
+and ran correctly end-to-end under gem5: `~~~ALL TESTS PASSED~~~`, `Pass`.
+
+**But the full `dtln_noise_suppression` benchmark crashes gem5 itself —
+a segfault, not a wrong-answer or slow-performance issue.** Rebuilding
+`run_tflm_benchmark` with the same clang wrapper and running it under
+gem5 produces no output at all:
+
+```
+gem5 has encountered a segmentation fault!
+...
+gem5.opt(...RiscvISAInst::Vlse32_vMicro::initiateAcc...)
+```
+
+`Vlse32_v` is a **strided** vector load — notably, `Int8DotProductRvv`
+(the kernel this whole investigation is centered on) never uses strided
+loads, only unit-stride `vle8.v`. This means clang's auto-vectorizer chose
+a strided-load codegen pattern *somewhere else* in the much larger
+`dtln`/LSTM code surface (`lstm_eval.cc`'s gate/state-buffer handling,
+quantization code, activation functions — none of which
+`hello_world_test`'s single tiny `FULLY_CONNECTED` op ever touches) that
+triggers what looks like a real bug/gap in gem5's `MinorCPU` RVV decode —
+GCC's codegen for the same C++ source apparently never emits this
+instruction in the same spot, so this particular crash is specific to
+clang's optimizer choices, not a TFLM source-level issue.
+
+Checked for prior art before concluding this was worth documenting rather
+than debugging further: TFLM's `Makefile` does have existing clang usage
+for other targets (Xtensa uses `CC_TOOL := clang`), so clang support isn't
+foreign to the project. A web search surfaced what looked like a
+directly-relevant precedent (a claimed CI report of clang producing
+crashing Cortex-M firmware specifically in `FullyConnected` evaluation),
+but the specific issue URLs the search cited (`tensorflow/tensorflow#35939`,
+`tensorflow/tflite-micro#390`) both returned `404` when checked directly —
+they don't exist, so that specific claim couldn't be verified and isn't
+being relied on here. This finding stands on its own local reproduction,
+not on unverified external precedent.
+
+**Not pursued further, reverted to GCC.** Root-causing exactly which
+line/function clang vectorizes into the offending `vlse32.v` (and whether
+it's fixable via a targeted `-fno-vectorize`-style flag on just that file,
+or is a genuine gem5 bug that would need a gem5-side fix) was judged not
+worth the effort relative to what it would unblock — GCC 13.4.0-1 already
+produces correct, validated results for every number in this project.
+`gen/riscv64_baremetal_vector_aarch64_default_gcc/` was rebuilt clean with
+GCC after this investigation (bit-for-bit matching the documented
+baseline: `Output CRC32: 0x7E578D1C`, gem5 total 1,133,683 ticks, whisper
+455,304). The wrapper scripts remain saved in `script/clang_wrapper/` as
+a working, documented reference — useful for narrower experiments (like
+the ceiling-microbenchmark cross-validation that prompted this
+investigation, or `hello_world_test`-scale sanity checks) — but not
+validated for building the full `dtln` benchmark, which is confirmed
+broken.
+
 ## Known limitations / follow-ups not yet done
 
 - `keyword_benchmark` and `person_detection_benchmark` (the two dedicated
