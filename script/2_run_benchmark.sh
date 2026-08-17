@@ -15,29 +15,37 @@
 #   scalar FULLY_CONNECTED (TARGET=riscv64_baremetal)        x {gem5, whisper}
 #   vectorized FULLY_CONNECTED (TARGET=riscv64_baremetal_vector) x {gem5, whisper}
 #
+# Optional first arg filters which TARGET to run: "scalar", "vector", or
+# omit for both (default, matches doc/performance.md's full table).
+#
 # Output lands in test/output/gen/<target>_aarch64_default_gcc/bin/tflm_benchmark/
 # {logs_gem5.txt,logs_whisper.txt} — each run overwrites its own target's log
 # in place, so scalar vs. vector don't collide with each other, but reruns of
 # the same TARGET/SIMULATOR combo do.
 
 export TFLM_HOME="/home/ajno5/work/2_pattern/tflm/tflite-micro"
-export TOOLCHAIN_ARGS="TARGET_TOOLCHAIN_ROOT=$HOME/work/1_toolchain/xpack/xpack-riscv-none-elf-gcc-13.2.0-2/bin/ TARGET_TOOLCHAIN_PREFIX=riscv-none-elf-"
+export TOOLCHAIN_ARGS="TARGET_TOOLCHAIN_ROOT=$HOME/work/1_toolchain/xpack/xpack-riscv-none-elf-gcc-13.4.0-1/bin/ TARGET_TOOLCHAIN_PREFIX=riscv-none-elf-"
 
 MODEL=tensorflow/lite/micro/examples/dtln/dtln_noise_suppression.tflite
 ARENA_SIZE=16384
+FILTER="${1:-both}"
 
-# Scalar baseline FULLY_CONNECTED, gem5 (default SIMULATOR) then whisper:
-make -f tensorflow/lite/micro/tools/make/Makefile TARGET=riscv64_baremetal $TOOLCHAIN_ARGS \
-  BUILD_TYPE=default run_tflm_benchmark \
-  GENERIC_BENCHMARK_MODEL_PATH=${MODEL} GENERIC_BENCHMARK_ARENA_SIZE=${ARENA_SIZE}
-make -f ${TFLM_HOME}/tensorflow/lite/micro/tools/make/Makefile TARGET=riscv64_baremetal SIMULATOR=whisper $TOOLCHAIN_ARGS \
-  BUILD_TYPE=default run_tflm_benchmark \
-  GENERIC_BENCHMARK_MODEL_PATH=${MODEL} GENERIC_BENCHMARK_ARENA_SIZE=${ARENA_SIZE}
+if [[ "$FILTER" == "scalar" || "$FILTER" == "both" ]]; then
+  # Scalar baseline FULLY_CONNECTED, gem5 (default SIMULATOR) then whisper:
+  make -f tensorflow/lite/micro/tools/make/Makefile TARGET=riscv64_baremetal $TOOLCHAIN_ARGS \
+    BUILD_TYPE=default run_tflm_benchmark \
+    GENERIC_BENCHMARK_MODEL_PATH=${MODEL} GENERIC_BENCHMARK_ARENA_SIZE=${ARENA_SIZE}
+  make -f ${TFLM_HOME}/tensorflow/lite/micro/tools/make/Makefile TARGET=riscv64_baremetal SIMULATOR=whisper $TOOLCHAIN_ARGS \
+    BUILD_TYPE=default run_tflm_benchmark \
+    GENERIC_BENCHMARK_MODEL_PATH=${MODEL} GENERIC_BENCHMARK_ARENA_SIZE=${ARENA_SIZE}
+fi
 
-# Vectorized FULLY_CONNECTED (-march=...zve64x), gem5 then whisper:
-make -f ${TFLM_HOME}/tensorflow/lite/micro/tools/make/Makefile TARGET=riscv64_baremetal_vector $TOOLCHAIN_ARGS \
-  BUILD_TYPE=default run_tflm_benchmark \
-  GENERIC_BENCHMARK_MODEL_PATH=${MODEL} GENERIC_BENCHMARK_ARENA_SIZE=${ARENA_SIZE}
-make -f ${TFLM_HOME}/tensorflow/lite/micro/tools/make/Makefile TARGET=riscv64_baremetal_vector SIMULATOR=whisper $TOOLCHAIN_ARGS \
-  BUILD_TYPE=default run_tflm_benchmark \
-  GENERIC_BENCHMARK_MODEL_PATH=${MODEL} GENERIC_BENCHMARK_ARENA_SIZE=${ARENA_SIZE}
+if [[ "$FILTER" == "vector" || "$FILTER" == "both" ]]; then
+  # Vectorized FULLY_CONNECTED (-march=...zve64x), gem5 then whisper:
+  make -f ${TFLM_HOME}/tensorflow/lite/micro/tools/make/Makefile TARGET=riscv64_baremetal_vector $TOOLCHAIN_ARGS \
+    BUILD_TYPE=default run_tflm_benchmark \
+    GENERIC_BENCHMARK_MODEL_PATH=${MODEL} GENERIC_BENCHMARK_ARENA_SIZE=${ARENA_SIZE}
+  make -f ${TFLM_HOME}/tensorflow/lite/micro/tools/make/Makefile TARGET=riscv64_baremetal_vector SIMULATOR=whisper $TOOLCHAIN_ARGS \
+    BUILD_TYPE=default run_tflm_benchmark \
+    GENERIC_BENCHMARK_MODEL_PATH=${MODEL} GENERIC_BENCHMARK_ARENA_SIZE=${ARENA_SIZE}
+fi

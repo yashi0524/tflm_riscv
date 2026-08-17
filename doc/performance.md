@@ -5,12 +5,12 @@ simulator integrations. For the *why* behind each target/fix, see
 [`gem5_integration.md`](gem5_integration.md) — this file is just the
 numbers, kept as a single scannable reference.
 
-**Caveat that applies to every row below except the per-op table further
-down:** TFLM's per-op software timing instrumentation isn't wired up by
-default — every op prints `0 ticks (0 ms)` unless both (a) a profiler is
-explicitly passed into `MicroInterpreter` (only `run_tflm_benchmark` does
-this; `hello_world_test`/`dtln_test`/etc. don't) and (b) the target has its
-own `micro_time.cc` reading a real cycle counter (only `riscv64_baremetal`
+**Caveat that applies to every row below:** TFLM's per-op software timing
+instrumentation isn't wired up by default — every op prints `0 ticks (0
+ms)` unless both (a) a profiler is explicitly passed into
+`MicroInterpreter` (only `run_tflm_benchmark` does this;
+`hello_world_test`/`dtln_test`/etc. don't) and (b) the target has its own
+`micro_time.cc` reading a real cycle counter (only `riscv64_baremetal`
 has one, added specifically for this). Where neither holds, the only
 trustworthy timing figures are the simulator's own whole-run counters:
 gem5's `tick` count (cycle-accurate, `RiscvMinorCPU`) or whisper's
@@ -18,13 +18,20 @@ instruction count (functional-only, no timing model — **not**
 comparable to gem5 ticks, just useful as a relative "how much work did
 this do" signal and for fast iteration).
 
+**For real per-op cycle counts, the vectorized `FULLY_CONNECTED` kernel,
+and a full roofline analysis — all specific to `dtln_noise_suppression`
+— see [`performance_dtln.md`](performance_dtln.md).** This file stays the
+consolidated whole-run log across every benchmark in the project;
+`dtln_test`/`dtln_noise_suppression` below is just one row/one model among
+several.
+
 ## `riscv64_baremetal` (FS / bare-metal mode, gem5 — cycle-accurate `RiscvMinorCPU`)
 
 | Test/benchmark | Model | Arena | Binary size | gem5 ticks | Simulated time | Notes |
 |---|---|---|---|---|---|---|
 | `hello_world_test` | hello_world (1 `FULLY_CONNECTED`) | 2,408 B | 147,232 B | 672,762,000 | ~0.67 ms | FLASH usage ~87.4 KB (of the original 128 KB budget, since bumped to 4 MB) |
 | `micro_utils_test` | n/a (unit test, 8 cases) | — | — | 126,455,000 | ~0.13 ms | Genuine result, post-`.init_array` fix (was silently vacuous before) |
-| `dtln_test` | `dtln_noise_suppression.tflite` (LSTM + 1 `FULLY_CONNECTED`, `M=1,K=128,N=257`) | — | — | 5,996,072,000 | ~6.0 ms | Genuine result, post-`.init_array` fix (was silently vacuous before). Slowest/biggest `riscv64_baremetal` run so far. |
+| `dtln_test` | `dtln_noise_suppression.tflite` (LSTM + 1 `FULLY_CONNECTED`, `M=1,K=128,N=257`) | — | — | 5,996,072,000 | ~6.0 ms | Genuine result, post-`.init_array` fix (was silently vacuous before). Slowest/biggest `riscv64_baremetal` run so far. Per-op breakdown + roofline: [`performance_dtln.md`](performance_dtln.md). |
 | `tflm_benchmark` | `person_detect.tflite` (30 ops) | 89,248 B | — | 429,485,090,000 | ~429 ms | Post-`.init_array`-fix regression check; matches pre-fix 422,108,725,000 (~422 ms) within normal run-to-run variance |
 
 Note the FS-mode `tflm_benchmark` run (~422–429 ms) is roughly **14×
@@ -39,7 +46,7 @@ drawn from that gap yet.
 | Test/benchmark | Model | Instructions | Wall-clock | Throughput | Notes |
 |---|---|---|---|---|---|
 | `hello_world_test` | hello_world (1 `FULLY_CONNECTED`) | 449,804 | 0.04 s | ~10.2M inst/s | Identical arena/output to the gem5 run; unaffected by the `.init_array` fix either way (older test-macro style) |
-| `dtln_test` | `dtln_noise_suppression.tflite` | 4,711,964 | 0.38 s | ~12.5M inst/s | Genuine result, post-`.init_array` fix. ~10× the instruction count of `hello_world_test`, consistent with the much larger model |
+| `dtln_test` | `dtln_noise_suppression.tflite` | 4,711,964 | 0.38 s | ~12.5M inst/s | Genuine result, post-`.init_array` fix. ~10× the instruction count of `hello_world_test`, consistent with the much larger model. Per-op breakdown + roofline: [`performance_dtln.md`](performance_dtln.md). |
 
 `whisper_rv64gcv_config.json` declares vector/float support
 (`rv64imafdcv_zfh_zvfh_...`, VLEN=512/ELEN=64) that no current TFLM build
@@ -48,232 +55,22 @@ actually uses — `riscv64_baremetal` still compiles `rv64imc_zicsr` (no
 will read 0 for every run above; it's a placeholder for future
 vectorized-kernel comparisons, not a current data source.
 
-## Per-op cycle counts: `dtln_noise_suppression.tflite` on `riscv64_baremetal`
-
-Real per-op profiling, not `0 ticks` — see "Per-op cycle counts on
-`riscv64_baremetal`" in [`gem5_integration.md`](gem5_integration.md) for
-how (`micro_time.cc` reading `mcycle`, plus running via
-`run_tflm_benchmark` instead of `dtln_test` directly, since only the
-former wires a `MicroProfiler`). `GENERIC_BENCHMARK_ARENA_SIZE=16384`.
-
-| Op | gem5 cycles | whisper cycles |
-|---|---|---|
-| `UNIDIRECTIONAL_SEQUENCE_LSTM` (1st call) | 2,685,618 | 2,479,287 |
-| `UNIDIRECTIONAL_SEQUENCE_LSTM` (2nd call) | 1,845,791 | 1,688,145 |
-| `FULLY_CONNECTED` | 378,379 | 311,697 |
-| `LOGISTIC` | 89,537 | 88,405 |
-| **Total (profiled ops only)** | **4,999,325** | **4,567,534** |
-
-Output CRC32 (`0x7E578D1C`) identical between simulators. gem5's numbers
-are the trustworthy ones for actual performance comparison (models real
-pipeline stalls); whisper's are close but not cycle-accurate (functional
-simulator, closer to an idealized-IPC assumption) — good for fast relative
-comparison, not absolute numbers.
-
-**The LSTM, not the `FULLY_CONNECTED` layer, dominates** — ~91% of total
-profiled cycles either way. Relevant if/when comparing a vectorized
-`FULLY_CONNECTED` kernel against this baseline: the FC layer alone is a
-small fraction of this model's total cost.
-
-`person_detect.tflite` hasn't been run through this same per-op profiling
-path yet — deliberately skipped given its ~7–9 minute gem5 wall-clock cost.
-
-## Vectorized `FULLY_CONNECTED` (`riscv64_baremetal_vector`) vs. scalar baseline
-
-See "A vectorized `FULLY_CONNECTED` kernel" in
-[`gem5_integration.md`](gem5_integration.md) for the implementation and a
-real correctness bug found/fixed along the way (an `if constexpr` type
-guard that didn't check `OutputType`, which let the fast path incorrectly
-apply to `lstm_eval.cc`'s internal `int16_t`-output gate matmuls — caught
-via an Output CRC32 mismatch, `0x50433D2B` vs. the correct `0x7E578D1C`).
-
-| | gem5 (cycle-accurate) | whisper (functional, no timing model) |
-|---|---|---|
-| Baseline `FULLY_CONNECTED` | 378,379 | 311,697 |
-| Vectorized `FULLY_CONNECTED` | 79,786 | 25,477 |
-| **Speedup** | **4.74×** | **12.2×** (not representative — see below) |
-
-Output CRC32 (`0x7E578D1C`) identical to baseline in both cases — verified
-correct, not just faster. gem5's 4.74× is the number to trust; whisper's
-12.2× is inflated by having no cycle-accurate memory/pipeline model (can't
-capture the real cost of the vector loads), so don't read it as a
-real-hardware expectation.
-
-Whole-model effect (LSTM, ~91% of total cycles, wasn't vectorized here):
-
-| | gem5 total ticks | whisper total ticks |
-|---|---|---|
-| Baseline | 4,999,325 | 4,567,534 |
-| With vectorized FC | 4,369,141 | 4,281,314 |
-| **Whole-model speedup** | **~12.6%** | **~6.3%** |
-
-Target: `riscv64_baremetal_vector` (`-march=rv64imc_zicsr_zve64x`) — a
-separate `TARGET` from plain `riscv64_baremetal` deliberately, to avoid
-`GENDIR` cache collisions between the two `-march=` variants (this build
-has no `.d` header-dependency tracking at all — a real gotcha discovered
-along the way, see the doc — so mixing arches under one `TARGET` risks
-silently linking stale objects).
-
-> **If you want to do roofline analysis, build/run with
-> `TARGET=riscv64_baremetal_vector`, not plain `riscv64_baremetal`.** The
-> roofline's peak-compute ceiling below is defined by the RVV vector unit's
-> int8 throughput (`VLEN=512`) — only `riscv64_baremetal_vector` binaries
-> (`-march=...zve64x`) actually contain RVV instructions. Plain
-> `riscv64_baremetal` is pure scalar (`rv64imc_zicsr`, no `v` extension) and
-> structurally can't approach that ceiling regardless of optimization, so
-> its achieved-performance points aren't meaningful to plot against a
-> vector-unit-based peak line. (Concrete illustration of the same fact:
-> whisper's `Vector`/`VectorLoad`/`VectorStore` HPM counters read 0 on the
-> scalar target — there are no RVV instructions to count at all.)
->
-> **Also run `run_tflm_benchmark`, not `test_dtln_test`, as the binary.**
-> `dtln_test.cc` constructs `MicroInterpreter` without a `MicroProfiler`
-> (see the caveat at the top of this file), so it never calls
-> `GetCurrentTimeTicks()` and its log has no per-op cycle counts at all —
-> only whole-run pass/fail. `run_tflm_benchmark`
-> (`generic_model_benchmark.cc`) is the one harness that wires a real
-> `MicroProfiler` into the interpreter, which is where every per-op number
-> in this section (and the roofline's achieved-performance points) comes
-> from — see [`script/2_run_benchmark.sh`](../script/2_run_benchmark.sh).
-
-```bash
-make -f tensorflow/lite/micro/tools/make/Makefile TARGET=riscv64_baremetal_vector $TOOLCHAIN_ARGS \
-  BUILD_TYPE=default run_tflm_benchmark \
-  GENERIC_BENCHMARK_MODEL_PATH=tensorflow/lite/micro/examples/dtln/dtln_noise_suppression.tflite \
-  GENERIC_BENCHMARK_ARENA_SIZE=16384
-```
-
-## Roofline analysis
-
-Shapes pulled straight from the `.tflite` flatbuffer via
-[`script/3_extract_lstm_shapes.py`](../script/3_extract_lstm_shapes.py) (same
-technique as the "Benchmark candidate comparison" table below, extended to
-`UNIDIRECTIONAL_SEQUENCE_LSTM`'s 24 fixed input operand slots — gate
-weights/biases/state/peephole/projection/layer-norm — instead of
-`FULLY_CONNECTED`'s plain `[M,K]x[K,N]`). `dtln_noise_suppression.tflite`'s
-LSTM has no peephole/projection/layer-norm tensors populated (plain LSTM),
-so each call is just 8 gate matmuls: 4× `input_to_*_weights` + 4×
-`recurrent_to_*_weights`.
-
-### Machine parameters
-
-Same board as the sibling `gemm` project's
-(`sim_config/gem5_riscv_baremetal_fs.py`): `RiscvMinorCPU`, 1 GHz,
-`VLEN=512`/`ELEN=64`, `DDR3_1600_8x8`, no L2/L3 (64 kB L1 I/D only).
-
-- Peak BW = 1600 MT/s × 8 B = **12.8 GB/s**
-- Peak int8 compute (widening MAC, `vl = VLEN/SEW = 512/8 = 64` int8
-  elements/instr, idealized 1 vector-MAC-instruction/cycle ceiling — same
-  simplifying assumption the `gemm` project's roofline uses for its FP64
-  case): `64 × 2 FLOP/MAC × 1 GHz` = **128 GFLOP/s**
-- Ridge point = 128 / 12.8 = **10 FLOP/byte**
-
-### Arithmetic intensity
-
-Unlike the `gemm` project (which reads real `VectorLoad`/`VectorStore` HPM
-counts from whisper, since its tiled/blocked kernel has no closed-form
-memory-traffic formula), `Q` here is computed directly from the flatbuffer
-weight shapes rather than measured HPM counters — these are all
-batch-1 (`M=1`) int8 GEMVs with no blocking, so every weight byte is read
-exactly once and the memory traffic has an exact closed form (this also
-sidesteps gem5 MinorCPU's `mhpmcounterN` being unusable — like
-`TimingSimpleCPU` in the `gemm` project's notes, `RiscvMinorCPU` has no
-configurable HPM event model and just aliases every `mhpmcounterN` to the
-cycle counter). Activation/bias/output bytes are omitted (a few hundred
-bytes vs. tens of thousands of weight bytes — under 2% effect on AI).
-
-| | MACs | FLOPs (2×MACs) | Weight bytes (int8) | AI (FLOP/byte) |
-|---|---|---|---|---|
-| `FULLY_CONNECTED` (`M=1,K=128,N=257`) | 32,896 | 65,792 | 32,896 | 2.0 |
-| LSTM 1st call (`in=257→hid=128`) | 4×(128×257)+4×(128×128) = 197,120 | 394,240 | 197,120 | 2.0 |
-| LSTM 2nd call (`in=128→hid=128`) | 4×(128×128)+4×(128×128) = 131,072 | 262,144 | 131,072 | 2.0 |
-
-**All three land at exactly the same AI = 2.0 FLOP/byte** — not a
-coincidence, every one of these is a batch-1 int8 GEMV with zero weight
-reuse, so the FLOP/byte ratio is fixed by the arithmetic alone regardless of
-which gate or op it is. `AI (2.0) << ridge (10.0)` → solidly **memory-bound**
-for all three; the memory-bound ceiling (attainable performance) is
-`AI × peak_BW = 2.0 × 12.8 = 25.6 GFLOP/s` for every op here.
-
-### Achieved performance vs. the roofline (gem5, cycle-accurate)
-
-`T = cycles / 1e9 s` (1 GHz clock); `P = FLOPs / T`; `efficiency = P /
-attainable`. Cycles from the per-op `MicroProfiler` table above
-(`FULLY_CONNECTED` baseline/vectorized from `riscv64_baremetal`/
-`riscv64_baremetal_vector` respectively; LSTM from the `riscv64_baremetal`
-scalar build — LSTM wasn't vectorized, so its numbers are ~7% lower again
-under the `_vector` target purely from `-march`-driven codegen/icache
-differences, not a real algorithmic change; not used here to keep this
-table apples-to-apples with a single build).
-
-| | Cycles | T (µs) | P (MFLOP/s) | Efficiency vs. 25.6 GFLOP/s ceiling | Cycles/weight-byte |
-|---|---|---|---|---|---|
-| `FULLY_CONNECTED` (scalar baseline) | 378,176 | 378.18 | 173.97 | 0.68% | 11.50 |
-| `FULLY_CONNECTED` (vectorized) | 79,553 | 79.55 | 827.02 | 3.23% | 2.42 |
-| LSTM 1st call (scalar) | 2,683,720 | 2683.72 | 146.90 | 0.57% | 13.61 |
-| LSTM 2nd call (scalar) | 1,845,580 | 1845.58 | 142.04 | 0.55% | 14.08 |
-
-**Verdict: nowhere close to saturating the memory-bound ceiling, in either
-build.** Even vectorized `FULLY_CONNECTED` — a 4.74× cycle-count win — only
-reaches ~3.2% of the 12.8 GB/s bandwidth-bound ceiling. This means the real
-bottleneck for the *scalar* baseline isn't DDR bandwidth at all; it's the
-in-order scalar pipeline's per-byte overhead (~11.5–14.1 cycles to move and
-consume one weight byte, one scalar MAC at a time). Vectorizing cuts that to
-~2.4 cycles/byte by processing 64 int8 elements/instruction instead of one —
-consistent with the measured 4.74× speedup — but even that leaves ~97% of
-headroom against peak DRAM bandwidth unused, meaning there's substantial
-room for further optimization (loop unrolling, prefetching, wider `LMUL`)
-before bandwidth itself becomes the binding constraint. The LSTM, still
-scalar in both builds, sits at essentially the same low efficiency as the
-scalar `FULLY_CONNECTED` baseline — expected, since it's built from the same
-kind of unblocked int8 GEMV and hasn't had the same vectorization applied.
-
-## Benchmark candidate comparison (FC/Conv layer shapes)
-
-Pulled directly from each model's flatbuffer via the vendored
-`flatbuffers` Python package + `schema_py_generated.py` (no `pip`/full TF
-install needed) — see the matrix-optimization discussion in the main
-session history. Kept here since it's the basis for picking `dtln_test`
-as the benchmark target above.
-
-| Model | Size | Largest FC/Conv layer (input × weight) | M×K×N | MACs |
-|---|---|---|---|---|
-| `hello_world_float` | 3.2 KB | `[1,16]×[16,16]` | 1×16×16 | 256 |
-| `dtln_noise_suppression` | 364 KB | `[1,1,128]×[257,128]` | **1×128×257** | **32,896** |
-| `micro_speech_quantized` | 18.4 KB | `[1,25,20,8]→flat×[4,4000]` | 1×4000×4 | 16,000 |
-| `memory_footprint` | 976 B | none (`ADD` only) | — | — |
-| `person_detect` | 294 KB | none (`CONV_2D`/`DEPTHWISE_CONV_2D` only, no FC layer) | — | — |
-
-`dtln_noise_suppression` was picked as the standing benchmark target:
-biggest model, most total FC compute, and a "square-ish" GEMM shape
-(K=128, N=257) rather than `micro_speech`'s extreme deep-K/narrow-N shape
-(K=4000, N=4).
-
 ## Reproducing
 
 ```bash
 source /home/ajno5/work/2_pattern/tflm/script/0_env_var_setup.sh
 cd /home/ajno5/work/2_pattern/tflm/tflite-micro
-TOOLCHAIN_ARGS="TARGET_TOOLCHAIN_ROOT=$HOME/work/1_toolchain/xpack/xpack-riscv-none-elf-gcc-13.2.0-2/bin/ TARGET_TOOLCHAIN_PREFIX=riscv-none-elf-"
+TOOLCHAIN_ARGS="TARGET_TOOLCHAIN_ROOT=$HOME/work/1_toolchain/xpack/xpack-riscv-none-elf-gcc-13.4.0-1/bin/ TARGET_TOOLCHAIN_PREFIX=riscv-none-elf-"
 
 # SE mode, RV64, qemu (SIMULATOR=gem5 is disabled here — see the
 # historical SE-mode section at the bottom of this file):
 make -f tensorflow/lite/micro/tools/make/Makefile TARGET=riscv64_generic $TOOLCHAIN_ARGS test_hello_world_test
 
-# FS mode, gem5 (default) or whisper:
+# FS mode, gem5 (default) or whisper — pass/fail smoke test, whole-run
+# ticks only (no per-op cycles; for those and the roofline analysis, see
+# performance_dtln.md's Reproducing section instead):
 make -f tensorflow/lite/micro/tools/make/Makefile TARGET=riscv64_baremetal $TOOLCHAIN_ARGS test_dtln_test
 make -f tensorflow/lite/micro/tools/make/Makefile TARGET=riscv64_baremetal SIMULATOR=whisper $TOOLCHAIN_ARGS test_dtln_test
-
-# Generic benchmark harness, with real per-op cycle counts (gem5 shown; add
-# SIMULATOR=whisper for the fast functional-only path):
-make -f tensorflow/lite/micro/tools/make/Makefile TARGET=riscv64_baremetal $TOOLCHAIN_ARGS \
-  BUILD_TYPE=default run_tflm_benchmark \
-  GENERIC_BENCHMARK_MODEL_PATH=tensorflow/lite/micro/examples/dtln/dtln_noise_suppression.tflite \
-  GENERIC_BENCHMARK_ARENA_SIZE=16384
-
-# person_detect.tflite works the same way, but budget ~7-9 min gem5 wall-clock:
-# GENERIC_BENCHMARK_MODEL_PATH=tensorflow/lite/micro/models/person_detect.tflite
-# GENERIC_BENCHMARK_ARENA_SIZE=153600
 ```
 
 ## `riscv{32,64}_generic` (SE / syscall-emulation mode, gem5) — historical, now disabled

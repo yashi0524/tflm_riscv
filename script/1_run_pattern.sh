@@ -1,7 +1,7 @@
 #!/bin/bash
 
 export TFLM_HOME="/home/ajno5/work/2_pattern/tflm/tflite-micro"
-export TOOLCHAIN_ARGS="TARGET_TOOLCHAIN_ROOT=$HOME/work/1_toolchain/xpack/xpack-riscv-none-elf-gcc-13.2.0-2/bin/ TARGET_TOOLCHAIN_PREFIX=riscv-none-elf-"
+export TOOLCHAIN_ARGS="TARGET_TOOLCHAIN_ROOT=$HOME/work/1_toolchain/xpack/xpack-riscv-none-elf-gcc-13.4.0-1/bin/ TARGET_TOOLCHAIN_PREFIX=riscv-none-elf-"
 
 # SE mode, RV64, qemu (SIMULATOR=gem5 is disabled here — see the
 # historical SE-mode section at the bottom of this file):

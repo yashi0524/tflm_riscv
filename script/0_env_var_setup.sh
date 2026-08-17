@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 1. Path to your toolchain
-export TOOLCHAIN=$HOME/work/1_toolchain/xpack/xpack-riscv-none-elf-gcc-13.2.0-2
+export TOOLCHAIN=$HOME/work/1_toolchain/xpack/xpack-riscv-none-elf-gcc-13.4.0-1
 
 # 2. Get the 64-bit sub-directory name (likely rv64imafdc/lp64d)
 export MULTI_DIR=$($TOOLCHAIN/bin/riscv-none-elf-gcc -march=rv64gcv -mabi=lp64d -print-multi-directory)

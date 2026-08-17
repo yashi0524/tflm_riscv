@@ -847,6 +847,124 @@ for the layer it targets, modest for this particular model end-to-end.
   shape (`M=1, K=128, N=257`). Not verified against other FC shapes/models
   (e.g. `micro_speech`'s `K=4000, N=4`).
 
+### LSTM vectorization: a real bug found and fixed in `Int8DotProductRvv`, unblocked by upgrading GCC
+
+Followed up on whether `UNIDIRECTIONAL_SEQUENCE_LSTM`'s gate matmuls
+(excluded above by the `OutputType == int8_t` guard) could also take the
+RVV fast path — they're the same `[gate_size,K] x [K]` int8 GEMV shape as
+FC, just `int16_t` output (higher precision needed before the
+sigmoid/tanh gates). Relaxing the guard to drop the `OutputType` check
+reproduced the exact known-bad CRC32 (`0x50433D2B`) documented above —
+confirming this was never just an overly conservative type check. There's
+a real numeric bug.
+
+**Root cause, precisely identified.** Added a temporary diagnostic (both
+scalar and vector accumulation computed on every call, comparing them,
+using the scalar result so model output stays correct while logging the
+first divergence) and rebuilt `test_dtln_test` under whisper:
+
+```
+RVV_DOT_MISMATCH accum_depth=257 input_offset=128 filter_offset=0 scalar_acc=-3023 vec_acc=144177
+```
+
+`input_offset=128` is exactly one past `int8_t`'s range (`-128..127`).
+`Int8DotProductRvv` folds `input_offset`/`filter_offset` into a widening-add
+(`vwadd.vx`) whose scalar operand is SEW(=8)-bit-wide — `128` silently
+wraps to `-128` there, corrupting the whole accumulation. `128` is a
+legitimate value (`input_offset = -zero_point`, and `zero_point=-128` is a
+valid `int8_t` code) — FC's own zero-point (`+4`) never comes close to this
+edge, so the kernel has looked correct for FC this whole time. This is a
+**latent bug in the original vectorized FC kernel itself**, not an
+LSTM-specific issue — it would break FC too, for any model whose FC layer
+happened to have `zero_point=-128`.
+
+**The fix, algebraically:** expand
+`(filter[d]+filter_offset)*(input[d]+input_offset)` into
+`Sigma(filter*input) + input_offset*Sigma(filter) + filter_offset*Sigma(input)
++ K*filter_offset*input_offset` (the standard gemmlowp-style trick the
+original kernel comment explicitly said it was avoiding for simplicity —
+turns out to be the textbook-correct approach for exactly this reason).
+Offsets are then only ever applied via plain `int32_t` scalar arithmetic
+*after* vector reduction, never passed to a narrow vector intrinsic — so no
+truncation is possible regardless of offset value. Both widens
+(`vwadd.vx(va, 0, vl)`) use offset `0`, which can never overflow `int8_t`.
+
+**Validated correct at `-O0`, but initially blocked by a GCC 13.2 codegen
+bug at `-O2`.** Built a standalone probe (linked against
+`riscv64_baremetal_vector`'s own `start_semi.S`/`linker_semi.ld`, run under
+whisper for fast iteration) comparing this expansion against the scalar
+reference across `accum_depth` 1–513 (including the exact `K=257` shape)
+and offset pairs including the failing `±128` case: **114/114 correct at
+`-O0`.** But applying the identical fix to the real kernel — which compiles
+at `-O2` (`KERNEL_OPTIMIZATION_LEVEL := -O2`) — failed two different ways
+depending on simulator, under the project's toolchain at the time (xPack
+GCC 13.2.0):
+- **whisper**: illegal-instruction trap (`mcause=2`), the exact same trap
+  the standalone probe hit at `-O1`/`-O2` (only `-O0` was clean there too).
+- **gem5**: no trap, but a *third*, different wrong CRC32 — the classic
+  signature of miscompiled code producing plausible-looking garbage rather
+  than crashing outright.
+
+Tried scoping just `Int8DotProductRvv` to `__attribute__((optimize("O0")))`
+so the rest of the translation unit keeps `-O2`. This fixed whisper but
+**broke gem5 a third way**: `src/mem/xbar.cc:368: fatal: Unable to find
+destination for [...] on system.membus` — a fatal invalid memory access.
+Likely an ABI/register-save mismatch at the `-O0`/`-O2` optimization
+boundary, rather than anything about the dot-product logic itself, which
+was already proven correct in isolation.
+
+**Resolved: upgrading the toolchain fixed the codegen bug.** Checked xPack's
+`riscv-none-elf-gcc` releases — the project had been on `v13.2.0-2`
+(2023-09), and multiple newer releases existed, including `v13.4.0-1`
+(2025-10, same GCC 13.x major branch, patch-level fixes only — lowest risk
+of unrelated regressions elsewhere in the project). Downloaded it
+(`xpack-riscv-none-elf-gcc-13.4.0-1-linux-arm64.tar.gz`, same parent dir as
+the existing toolchain: `1_toolchain/xpack/`) and re-ran the standalone
+probe at `-O2`: **114/114 correct, no trap.** Rebuilt the real kernel with
+both fixes (the algebraic expansion, plus dropping `OutputType` from the
+`if constexpr` guard so LSTM's `int16_t`-output gate matmuls take the fast
+path) against GCC 13.4.0-1 — clean on both simulators, no traps, no fatal
+errors, `Output CRC32: 0x7E578D1C` (correct) on both.
+
+**Cross-shape validation** (scalar-target CRC32 vs. vector-target-with-fix
+CRC32, must match exactly): `dtln_noise_suppression` (FC `K=128,N=257`;
+LSTM `K=257/128→128`, single timestep/call), `mnist_lstm`'s
+`trained_lstm_int8.tflite` (LSTM `K=28/20→20`, genuinely sequential
+**28-timestep** processing per call — a different model entirely, not just
+a different shape), `micro_speech_quantized` (FC `K=4000,N=4`, extreme
+deep-K/narrow-N), `hello_world_int8` (FC `K=16,N=16`, tiny). All four
+matched exactly, on whisper; `dtln_noise_suppression` and `mnist_lstm` also
+re-verified on gem5. No mismatches, no crashes, anywhere.
+
+**Results** (`dtln_noise_suppression`, `riscv64_baremetal_vector`, GCC
+13.4.0-1):
+
+| | gem5 (cycle-accurate) | whisper (functional) |
+|---|---|---|
+| `UNIDIRECTIONAL_SEQUENCE_LSTM` (1st) | 2,685,618 → **621,580** (4.32×) | 2,479,287 → **221,910** (11.17×) |
+| `UNIDIRECTIONAL_SEQUENCE_LSTM` (2nd) | 1,845,791 → **435,055** (4.24×) | 1,688,145 → **183,513** (9.20×) |
+| `FULLY_CONNECTED` | 378,379 → **87,788** (4.31×) | 311,697 → **30,873** (10.09×) |
+| **Total (profiled ops)** | 4,999,325 → **1,233,600** | 4,567,534 → **524,701** |
+| **Whole-model speedup** | **~4.05×** | **~8.71×** |
+
+Unlike the FC-only fix (which only bought ~12.6% whole-model speedup, since
+the LSTM — ~91% of total cycles — was untouched), vectorizing the LSTM
+gates too gets the whole-model win the roofline analysis predicted was
+available: gem5's ~4.05× is the trustworthy figure (whisper's larger
+speedup is inflated the same way the FC-only whisper number was — no
+cycle-accurate memory/pipeline model).
+
+**Project toolchain default switched to GCC 13.4.0-1** (`script/
+0_env_var_setup.sh`, `script/1_run_pattern.sh`, `script/2_run_benchmark.sh`,
+and `performance.md`/`performance_dtln.md`'s `Reproducing` commands — the
+`TARGET_TOOLCHAIN_ROOT=...13.2.0-2...` examples earlier in *this* doc are
+untouched, since they're historical record of what was actually run for
+those earlier, unrelated fixes, and remain reproducible either way since
+both toolchain versions stay installed). The old 13.2.0-2 install and its
+tarball are left in place alongside the new one (`1_toolchain/xpack/`, both
+versions present) rather than removed, in case anything else in the
+project turns out to depend on the exact older version.
+
 ## Known limitations / follow-ups not yet done
 
 - `keyword_benchmark` and `person_detection_benchmark` (the two dedicated
