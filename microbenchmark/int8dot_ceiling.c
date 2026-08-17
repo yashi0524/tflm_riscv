@@ -33,8 +33,13 @@
  *   GCC 13.4.0-1:  206 cycles/iter, 3.723 GFLOP/s, 4 residual spills
  *   clang-18:      278 cycles/iter, 2.760 GFLOP/s, 3 residual spills
  *
- * Build + run (bare-metal RISC-V, links against the riscv64_baremetal_
- * vector target's own crt0/linker script -- no TFLM build needed):
+ * Build + run: `source ../script/0_env_var_setup.sh && make run` (see
+ * ./Makefile -- GCC 13.4.0-1 by default; `make run
+ * TOOLCHAIN_ROOT=../script/clang_wrapper/` for the clang-18 cross-check).
+ *
+ * The Makefile just automates the by-hand commands below (bare-metal
+ * RISC-V, links against the riscv64_baremetal_vector target's own
+ * crt0/linker script -- no TFLM build needed), kept here for reference:
  *
  *   source ../script/0_env_var_setup.sh
  *   TFLM_VEC_DIR=../tflite-micro/tensorflow/lite/micro/riscv64_baremetal_vector

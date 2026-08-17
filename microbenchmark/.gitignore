@@ -1,3 +1,5 @@
-# Build artifacts (see int8dot_ceiling.c's header comment for build commands)
+# Build artifacts (see int8dot_ceiling.c's header comment for build commands,
+# or just `make run` / `make run TOOLCHAIN_ROOT=../script/clang_wrapper/`)
 *.o
 *_riscv
+m5out/
