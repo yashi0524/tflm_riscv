@@ -326,21 +326,29 @@ mix showed a real 10-21% speedup — but re-running the actual `dtln`
 kernel under the same 2-FU config (not just the probe) showed only a
 4.55% whole-model cycle reduction, with efficiency against the
 correctly-rescaled 2-FU ceiling (4.510 vs. 3.723 GFLOP/s) actually
-*lower* than at 1 FU, not higher — Amdahl's Law: the real kernel spends
-much of its time on scalar work (bias add, requantization, activation
-clamping, LSTM gate logic) the FU count can't help. See "Correction: the
-2-FU experiment helps the real kernel much less than the synthetic probe
-suggested" in `gem5_integration.md` for the full breakdown. **The lever
-tops out fast even in the idealized case**: re-running `int8dot_ceiling.c`
-at 3 and 4 FUs gives exactly zero further improvement over 2 (170
-cycles/iter flat) — `MinorCPU`'s 2-wide issue front end, not FU count, is
-the real cap. See "The ceiling saturates at 2 FUs" in `gem5_integration.md`
-for the full breakdown, including why the isolated probe reaches a
-GFLOP/s figure this real kernel can't get anywhere close to (the probe is
-deliberately idealized — pure vector chain, hand-interleaved for maximum
-overlap — with none of the real kernel's surrounding scalar cost). Not applied
-to this project's default board either way, since it changes what CPU is
-being modeled, not how well the code uses the modeled CPU. Loop unrolling
+*lower* than at 1 FU, not higher — partly Amdahl's Law (the real kernel
+spends real cycles on scalar work — bias add, requantization, activation
+clamping, LSTM gate logic — the FU count can't help), but direct
+measurement found this scalar share smaller than it sounds: vector
+dot-product work is actually **~74%** of a real `FULLY_CONNECTED` call's
+cycles, not a minority diluted by scalar overhead (see "Realistic
+FULLY_CONNECTED bottleneck decomposition" in `gem5_integration.md`). The
+bigger factor is `MinorCPU`'s 2-wide issue front end capping how much
+*any* FU count can help even within that dominant vector portion — see
+"Correction: the 2-FU experiment helps the real kernel much less than the
+synthetic probe suggested" in `gem5_integration.md` for the full
+breakdown. **The lever tops out fast even in the idealized case**:
+re-running `int8dot_ceiling.c` at 3 and 4 FUs gives exactly zero further
+improvement over 2 (170 cycles/iter flat) — the same 2-wide issue front
+end, not FU count, is the real cap. See "The ceiling saturates at 2 FUs"
+in `gem5_integration.md` for the full breakdown, including why the
+isolated probe reaches a GFLOP/s figure this real kernel can't get
+anywhere close to (the probe is deliberately idealized — pure vector
+chain, hand-interleaved to exploit that issue width — with none of the
+real kernel's surrounding scalar cost, and not interleaved the way the
+probe is). Not applied to this project's default board either way, since
+it changes what CPU is being modeled, not how well the code uses the
+modeled CPU. Loop unrolling
 and a vector-accumulate-then-reduce-once restructuring
 were also tried and measured **not** to help for this project's actual
 shapes (see `gem5_integration.md`) — precomputing the filter-derived

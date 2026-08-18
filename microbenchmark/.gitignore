@@ -2,4 +2,6 @@
 # or just `make run` / `make run TOOLCHAIN_ROOT=../script/clang_wrapper/`)
 *.o
 *_riscv
+fc_bottleneck_riscv_v*
 m5out/
+m5out_fc_v*/

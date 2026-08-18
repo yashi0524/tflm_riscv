@@ -35,6 +35,8 @@
   - [Why efficiency stays low even after vectorization: `MinorCPU`'s single shared `FloatSimd` functional unit](#why-efficiency-stays-low-even-after-vectorization-minorcpus-single-shared-floatsimd-functional-unit)
   - [Measuring the real ceiling: `microbenchmark/int8dot_ceiling.c`](#measuring-the-real-ceiling-microbenchmarkint8dot_ceilingc)
   - [Correction: the 2-FU experiment helps the real kernel much less than the synthetic probe suggested](#correction-the-2-fu-experiment-helps-the-real-kernel-much-less-than-the-synthetic-probe-suggested)
+  - [The ceiling saturates at 2 FUs: `MinorCPU`'s 2-wide issue front end, not FU count, is the real limiter](#the-ceiling-saturates-at-2-fus-minorcpus-2-wide-issue-front-end-not-fu-count-is-the-real-limiter)
+  - [Realistic FULLY_CONNECTED bottleneck decomposition: vector work dominates, not scalar overhead](#realistic-fully_connected-bottleneck-decomposition-vector-work-dominates-not-scalar-overhead)
   - [Tried: interleaving independent output-channel dot-product chains — mixed result, not applied](#tried-interleaving-independent-output-channel-dot-product-chains--mixed-result-not-applied)
   - [Investigating clang as an alternative toolchain: builds clean, but crashes gem5 on the full `dtln` model](#investigating-clang-as-an-alternative-toolchain-builds-clean-but-crashes-gem5-on-the-full-dtln-model)
 - [Known limitations / follow-ups not yet done](#known-limitations--follow-ups-not-yet-done)
@@ -1228,16 +1230,23 @@ rebuild) under both configs:
 **The real kernel gets roughly a third of what the synthetic probe
 predicted (4.55% whole-model vs. 14-21% for the probe at the same
 shapes), and relative efficiency against the correctly-scaled ceiling
-actually goes *down*, not up.** This is Amdahl's Law: the real
-kernel's cycle count includes a lot that never touches the `FloatSimd`
-FU at all — bias addition, quantization-multiplier rescaling, activation
-min/max clamping, LSTM's gate-combination/cell-state logic, function-call
-and loop overhead, all scalar `IntALU`/`MemFU` work unaffected by a 2nd
-vector FU. `int8dot_ceiling.c` is almost pure FU-bound compute by design
-(that's the point of a ceiling probe), so it isn't diluted by any of this
-and gets close to the full benefit; the real kernel is. Since the ceiling
-itself grew *more* (21.2%) than the real kernel's achieved performance did
-(~4-5%), efficiency-against-ceiling nets out lower with 2 FUs, not higher.
+actually goes *down*, not up.** Part of this is genuinely Amdahl's Law:
+the real kernel's cycle count includes real scalar work that never
+touches the `FloatSimd` FU at all — bias addition, quantization-multiplier
+rescaling, activation min/max clamping, LSTM's gate-combination/cell-state
+logic — none of which a 2nd vector FU can help. But direct measurement
+(see "Realistic FULLY_CONNECTED bottleneck decomposition" below) found
+this scalar share is smaller than it sounds — vector dot-product work is
+actually ~74% of a real `FULLY_CONNECTED` call's cycles, not a minority
+diluted by scalar overhead. The bigger factor is that `MinorCPU`'s 2-wide
+issue front end caps how much *any* FU count can help even within that
+dominant vector portion (see "The ceiling saturates at 2 FUs" below) —
+`int8dot_ceiling.c` gets closer to the full available benefit because it's
+hand-interleaved to exploit that issue width; the real kernel's
+un-interleaved `out_c` loop can't reach the same ceiling as cleanly. Since
+the ceiling itself grew *more* (21.2%) than the real kernel's achieved
+performance did (~4-5%), efficiency-against-ceiling nets out lower with 2
+FUs, not higher.
 
 **Conclusion: the 2-FU hardware-model change is a weaker lever for this
 project's actual workload than the synthetic probe alone suggested.**
@@ -1302,6 +1311,97 @@ of how far a much messier, real workload sits from that idealized best
 case. This section's finding sharpens that ceiling further: even in the
 *best possible* case, more `FloatSimd` FUs stops helping past 2, so this
 lever was never going to be a big win for the real kernel either.
+
+### Realistic FULLY_CONNECTED bottleneck decomposition: vector work dominates, not scalar overhead
+
+Every paragraph above (the 2-FU correction, the ceiling saturation) has
+been explaining the real kernel's weak FU-count/interleaving payoff by
+pointing at scalar post-processing — bias add, requantization, activation
+clamping — as "a lot that never touches the `FloatSimd` FU." That claim
+was never actually *measured*, just asserted from first principles. Built
+[`../microbenchmark/fc_bottleneck.c`](../microbenchmark/fc_bottleneck.c)
+to check it directly, at `dtln`'s real FC shape (`M=1,K=128,N=257`) and
+real quantization params (pulled from the flatbuffer, not guessed:
+`input_offset=4`, `filter_offset=0`, `output_offset=-2`,
+`output_multiplier=1820954201`, `output_shift=-7`) — full per-channel
+pipeline (dot product -> bias -> requantize -> offset -> clamp -> store),
+with each stage individually removable via a compile-time `FC_VARIANT`
+flag (a *compile-time* flag, not a runtime branch -- see below for why
+that distinction mattered again here).
+
+**First attempt: a standalone replica, and a real methodology trap.**
+The `FC_VARIANT=0` (full pipeline) build measured only 19,510 cycles for
+one 257-channel pass — nowhere near the real kernel's 84,311. Disassembly
+found why: `filter_offset` had been passed in as a plain `const int32_t
+filter_offset = 0` local. Since that's a compile-time-visible literal
+zero, GCC proved `filter_offset * input_sum` in `Int8DotProductRvv` is
+always exactly 0 and deleted the entire `input_sum` reduction at compile
+time — the standalone benchmark was silently measuring a *cheaper,
+different* computation than the real kernel, which sees `filter_offset`
+as a genuine runtime value (`params.weights_offset`, populated from the
+model at `Prepare()` time) that GCC has no way to fold away, even though
+it happens to equal 0 for this model. Marking the quantization params
+`volatile` (forcing genuine runtime reads GCC can't constant-propagate)
+restored the correct 3-reduction instruction sequence (confirmed via
+disassembly) and closed part of the gap (19,510 -> 25,492 cycles), but a
+real gap to the true kernel remained even so — most likely register
+pressure and instruction scheduling differences from the much larger
+surrounding function (many more live locals: `filter_shape`,
+`output_shape`, the whole `FullyConnectedParams` struct, etc.) that a
+small, tight standalone loop structurally can't reproduce. Not fully
+resolved — kept in the microbenchmark directory as a real, working tool
+with this fidelity gap clearly documented in its own header comment,
+since it's still directionally useful and much faster to iterate on than
+rebuilding the whole benchmark, but its *absolute* cycle counts should
+not be trusted without cross-checking against direct instrumentation.
+
+**What actually resolved it: instrumenting the real kernel directly**,
+the same technique used to root-cause the original offset-truncation bug
+earlier in this doc. Added temporary `mcycle` probes bracketing each
+stage inside `FullyConnected()`'s `out_c` loop (guarded on
+`output_depth==257` so LSTM's gate matmuls, same template function,
+`output_depth==128`, don't pollute the aggregate), rebuilt, ran the real
+`dtln_noise_suppression` benchmark, reverted immediately after. Two
+independent passes (a 2-way dot-vs-post split, then a 4-way split) agreed
+to within 0.3%:
+
+| Stage | Cycles | % of clean 84,311-cycle baseline |
+|---|---|---|
+| Vector dot product (`Int8DotProductRvv`, 257 calls) | ~62,500 | **~74%** |
+| Requantize (`MultiplyByQuantizedMultiplier`) | ~19,600 | ~23% |
+| Clamp + store | ~10,900 | ~13% |
+| Bias add | ~8,500 | ~10% |
+
+(Percentages sum past 100% — the probes themselves add real overhead to
+every bucket, and stage boundaries aren't perfectly exclusive. Relative
+ordering and rough magnitude are the trustworthy part.)
+
+**Correction: the vector dot-product work is the majority of the real
+cost (~74%), not the scalar post-processing.** The scalar work is real
+and non-trivial — requantize alone (~23%) outweighs bias and clamp
+combined — but "a lot that never touches the FloatSimd FU" overstated its
+share; roughly three-quarters of this op's cycles are spent in exactly
+the code the FU-count and interleaving experiments were trying to
+speed up.
+
+**This does *not* mean the 2-FU/interleaving experiments' weak results
+were mismeasured — it changes *why* they underperformed.** Given vector
+work is the majority, a 2nd FU should help substantially if FU
+availability were the bottleneck. It measurably doesn't (`FULLY_CONNECTED`
+only 4.34% faster with 2 FUs, "Correction" above), which lines up with
+"The ceiling saturates at 2 FUs" above: `MinorCPU`'s 2-wide issue front
+end caps how much *any* number of `FloatSimd` FUs can help, and that cap
+applies inside this dominant vector portion too, not just to the isolated
+ceiling probe. The probe gets closer to the full FU-count benefit *within
+that cap* because it's hand-interleaved to maximize issue-slot overlap;
+the real kernel's `out_c` loop isn't (see "Tried: interleaving" below —
+porting that interleaving into the real loop didn't reproduce the probe's
+gain either). So: vector work dominates the real kernel's cycles, but
+the reason more FUs / interleaving don't help much isn't "it's mostly
+scalar" — it's that the 2-wide issue front end caps the achievable
+benefit inside the vector work itself, and the real kernel's un-interleaved
+code shape can't reach even that capped benefit as cleanly as the
+isolated probe does.
 
 ### Tried: interleaving independent output-channel dot-product chains — mixed result, not applied
 

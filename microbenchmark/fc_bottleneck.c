@@ -1,0 +1,267 @@
+#include <stdio.h>
+#include <stdint.h>
+#include <riscv_vector.h>
+
+/* Realistic FULLY_CONNECTED benchmark, at dtln_noise_suppression.tflite's
+ * actual FC shape (M=1, K=128, N=257) and actual quantization params
+ * (pulled straight from the .tflite flatbuffer -- see below), instead of
+ * int8dot_ceiling.c's isolated dot-product-only chain. Where the ceiling
+ * probe answers "what's the best this hardware could do for just the
+ * vector chain," this answers "where do the real kernel's cycles
+ * actually go" -- by building the whole per-output-channel pipeline
+ * (dot product -> bias add -> requantize -> output-offset -> clamp ->
+ * store, exactly mirroring FullyConnected()'s out_c loop in
+ * tensorflow/lite/kernels/internal/reference/integer_ops/
+ * fully_connected.h) and then removing one stage at a time via
+ * FC_VARIANT, to measure each stage's actual cycle contribution instead
+ * of just asserting "the real kernel does more scalar work" the way
+ * ../doc/gem5_integration.md's Amdahl's-Law paragraphs have so far.
+ *
+ * Int8DotProductRvv and MultiplyByQuantizedMultiplier below are direct
+ * copies of the real kernel's versions (fully_connected.h and
+ * tensorflow/lite/kernels/internal/common.cc respectively) -- copied
+ * rather than #included, since common.h pulls in fixedpoint.h/
+ * runtime_shape.h/types.h and the rest of TFLM's normal include graph,
+ * which this bare-metal probe deliberately avoids linking against (same
+ * reasoning as int8dot_ceiling.c: build directly against
+ * riscv64_baremetal_vector's own crt0/linker script, no TFLM library
+ * build needed). Keep both in sync with their real-kernel originals if
+ * either changes.
+ *
+ * Quantization params: real values from dtln_noise_suppression.tflite's
+ * FULLY_CONNECTED op (extracted via a one-off flatbuffer read, not
+ * guessed) -- input zero_point=-4 (input_offset=+4), filter zero_point=0
+ * (filter_offset=0, confirmed symmetric weight quantization -- see
+ * ../doc/gem5_integration.md's "Tried: interleaving..." section), output
+ * zero_point=-2 (output_offset=-2). output_multiplier/output_shift
+ * (1820954201, -7) computed from the real effective_scale
+ * (input_scale * filter_scale / output_scale = 0.00736330496147275 *
+ * 0.0348852202296257 / 0.03877529129385948) via TFLite's standard
+ * QuantizeMultiplier algorithm (frexp-based fixed-point decomposition) --
+ * not read directly from the flatbuffer, since TFLite computes this at
+ * Prepare() time rather than storing it. activation_min/max = -128/127
+ * (int8 full range -- this op's FusedActivationFunction is NONE).
+ *
+ * FC_VARIANT (set via -DFC_VARIANT=N at compile time -- a compile-time
+ * flag, not a runtime branch: a runtime branch guarding one of these
+ * stages already measured *worse* than doing the work unconditionally,
+ * see "Tried" in gem5_integration.md -- so a runtime toggle here would
+ * risk re-introducing that same scheduling artifact into what's supposed
+ * to be a clean per-stage attribution):
+ *   0 = FULL       -- every stage, matches the real kernel exactly
+ *   1 = NO_BIAS     -- skip the bias add
+ *   2 = NO_REQUANT  -- skip MultiplyByQuantizedMultiplier
+ *   3 = NO_CLAMP    -- skip the activation_min/max clamp
+ *   4 = DOT_ONLY    -- only Int8DotProductRvv, no scalar post-processing
+ *                      at all (closest analog to int8dot_ceiling.c, but
+ *                      at this op's real N=257/K=128 shape instead of an
+ *                      interleaved synthetic chain)
+ *
+ * Build + run (all 5 variants): `source ../script/0_env_var_setup.sh &&
+ * make run-fc-bottleneck` (see ./Makefile). Results and analysis: see
+ * "Realistic FULLY_CONNECTED bottleneck decomposition" in
+ * ../doc/gem5_integration.md.
+ *
+ * ============================================================================
+ * KNOWN FIDELITY GAP -- read before trusting this file's absolute numbers.
+ * ============================================================================
+ * This benchmark's FC_VARIANT=0 (full pipeline) measures ~25,000
+ * cycles/pass. The real kernel measures 84,311 cycles for the identical
+ * shape and op mix (confirmed via direct instrumentation of the real
+ * FullyConnected() -- see the doc section above). That gap was originally
+ * much worse (~19,500 cycles, 4.3x off) because the first version of this
+ * file passed `filter_offset` in as a plain `const int32_t filter_offset =
+ * 0` local: a compile-time-visible literal zero let GCC prove
+ * `filter_offset * input_sum` in Int8DotProductRvv is always exactly 0 and
+ * delete the entire input_sum reduction at compile time -- silently
+ * measuring a *cheaper, different* computation than the real kernel, which
+ * sees filter_offset as a genuine runtime value (params.weights_offset,
+ * only known after the model loads) it can't fold away. That's why every
+ * quantization param below is declared `volatile`, not `const` -- forces a
+ * real runtime read GCC can't constant-propagate, closing most (not all)
+ * of the gap and restoring the correct 3-reduction instruction sequence
+ * (verified via disassembly).
+ *
+ * A real gap remains even so (~25,000 vs. 84,311 for FC_VARIANT=0), most
+ * likely from register-pressure/instruction-scheduling differences: the
+ * real FullyConnected() has many more live locals in scope around the same
+ * inlined Int8DotProductRvv call (filter_shape, output_shape, the whole
+ * FullyConnectedParams struct, etc.) than this tight standalone loop does,
+ * and this project has already found more than once that MinorCPU's
+ * in-order, latency-bound pipeline is sensitive to exactly this kind of
+ * surrounding code shape in ways that are hard to predict from first
+ * principles (see "Tried: interleaving..." in gem5_integration.md for
+ * another instance of the same lesson). Not chased down further -- direct
+ * instrumentation of the real kernel already gives reliable ground truth
+ * (the table in gem5_integration.md), so closing this file's absolute-
+ * number gap further wasn't worth the effort relative to what it would
+ * unblock.
+ *
+ * What this file IS still good for: fast iteration on relative,
+ * within-itself comparisons (e.g. "does skipping the bias add measurably
+ * change cycles at all") without needing to touch and revert the real
+ * kernel each time. What it is NOT reliable for: absolute cycle counts, or
+ * precise percentage-of-total splits -- use the direct-instrumentation
+ * numbers in gem5_integration.md for those.
+ */
+
+#define N_CHANNELS 257
+#define K_DEPTH 128
+#define ITERS 20
+
+#ifndef FC_VARIANT
+#define FC_VARIANT 0
+#endif
+
+static uint32_t rng_state = 12345u;
+static int8_t rand_int8(void) {
+  rng_state = rng_state * 1103515245u + 12345u;
+  return (int8_t)((rng_state >> 16) & 0xFFu);
+}
+
+static inline uint64_t ReadMcycle(void) {
+  uint64_t v;
+  asm volatile("csrr %0, mcycle" : "=r"(v));
+  return v;
+}
+
+/* Copy of fully_connected.h's Int8DotProductRvv -- see that file's own
+ * header comment for the offset-truncation-bug history and why the
+ * gemmlowp-style algebraic expansion is used instead of folding offsets
+ * into vwadd.vx. Unchanged here: this benchmark is measuring what's
+ * *around* this function, not this function itself (see
+ * int8dot_ceiling.c for that). */
+static inline int32_t Int8DotProductRvv(const int8_t* input,
+                                        const int8_t* filter, int accum_depth,
+                                        int32_t input_offset,
+                                        int32_t filter_offset) {
+  int32_t dot = 0;
+  int32_t filter_sum = 0;
+  int32_t input_sum = 0;
+  int n = accum_depth;
+  const int8_t* a = input;
+  const int8_t* w = filter;
+  while (n > 0) {
+    size_t vl = __riscv_vsetvl_e8m2(n);
+    vint8m2_t va = __riscv_vle8_v_i8m2(a, vl);
+    vint8m2_t vw = __riscv_vle8_v_i8m2(w, vl);
+    vint16m4_t va16 = __riscv_vwadd_vx_i16m4(va, 0, vl);
+    vint16m4_t vw16 = __riscv_vwadd_vx_i16m4(vw, 0, vl);
+    vint32m8_t prod32 = __riscv_vwmul_vv_i32m8(vw16, va16, vl);
+    vint32m1_t zero32 = __riscv_vmv_v_x_i32m1(0, 1);
+
+    vint32m1_t dot_v = __riscv_vredsum_vs_i32m8_i32m1(prod32, zero32, vl);
+    dot += __riscv_vmv_x_s_i32m1_i32(dot_v);
+
+    vint32m1_t fsum_v = __riscv_vwredsum_vs_i16m4_i32m1(vw16, zero32, vl);
+    filter_sum += __riscv_vmv_x_s_i32m1_i32(fsum_v);
+
+    vint32m1_t isum_v = __riscv_vwredsum_vs_i16m4_i32m1(va16, zero32, vl);
+    input_sum += __riscv_vmv_x_s_i32m1_i32(isum_v);
+
+    a += vl;
+    w += vl;
+    n -= (int)vl;
+  }
+  return dot + input_offset * filter_sum + filter_offset * input_sum +
+         accum_depth * filter_offset * input_offset;
+}
+
+/* Copy of the int32_t overload from
+ * tensorflow/lite/kernels/internal/common.cc, used by FullyConnected()'s
+ * int32-accumulator requantization path. */
+static inline int32_t MultiplyByQuantizedMultiplier(int32_t x,
+                                                     int32_t quantized_multiplier,
+                                                     int shift) {
+  const int64_t total_shift = 31 - shift;
+  const int64_t round = (int64_t)1 << (total_shift - 1);
+  int64_t result = x * (int64_t)quantized_multiplier + round;
+  result = result >> total_shift;
+  return (int32_t)result;
+}
+
+int main(void) {
+  static int8_t input[K_DEPTH];
+  static int8_t filter[N_CHANNELS][K_DEPTH];
+  static int32_t bias[N_CHANNELS];
+  static int8_t output[N_CHANNELS];
+
+  for (int i = 0; i < K_DEPTH; ++i) input[i] = rand_int8();
+  for (int n = 0; n < N_CHANNELS; ++n) {
+    for (int i = 0; i < K_DEPTH; ++i) filter[n][i] = rand_int8();
+    bias[n] = (int32_t)rand_int8() * 1000;
+  }
+
+  /* volatile, not const: the real kernel reads these from a
+   * FullyConnectedParams struct populated at Prepare() time from the
+   * model's flatbuffer -- genuine runtime values GCC cannot see the
+   * contents of at compile time, even though filter_offset happens to
+   * equal 0 for this real model. A plain `const int32_t filter_offset = 0`
+   * here would let GCC prove filter_offset*input_sum is always 0 and
+   * delete the whole input_sum reduction at compile time -- confirmed via
+   * disassembly this actually happened in an earlier version of this
+   * benchmark (only 2 of Int8DotProductRvv's 3 reductions survived), which
+   * is why FC_VARIANT=4 measured ~4x fewer cycles than instrumenting the
+   * real kernel directly showed for the same "257 calls" quantity. `volatile`
+   * forces a genuine runtime read at every use, closing that gap. */
+  volatile int32_t input_offset = 4;
+  volatile int32_t filter_offset = 0;
+  volatile int32_t output_offset = -2;
+  volatile int32_t output_multiplier = 1820954201;
+  volatile int output_shift = -7;
+  volatile int32_t activation_min = -128;
+  volatile int32_t activation_max = 127;
+
+  int32_t sink = 0;
+
+  uint64_t t0 = ReadMcycle();
+  for (int it = 0; it < ITERS; ++it) {
+    /* Same anti-hoisting trick as int8dot_ceiling.c: without this, the
+     * compiler can prove every outer iteration computes the same 257
+     * outputs and hoist the whole loop out. */
+    int8_t pert;
+    asm volatile("addi %0, %1, 0" : "=r"(pert) : "r"(it));
+    input[0] = pert;
+
+    for (int n = 0; n < N_CHANNELS; ++n) {
+      int32_t acc = Int8DotProductRvv(input, filter[n], K_DEPTH, input_offset,
+                                      filter_offset);
+
+#if FC_VARIANT == 4 /* DOT_ONLY */
+      sink += acc;
+#else
+#if FC_VARIANT != 1 /* not NO_BIAS */
+      acc += bias[n];
+#endif
+
+#if FC_VARIANT != 2 /* not NO_REQUANT */
+      int32_t acc_scaled =
+          MultiplyByQuantizedMultiplier(acc, output_multiplier, output_shift);
+#else
+      int32_t acc_scaled = acc;
+#endif
+      acc_scaled += output_offset;
+
+#if FC_VARIANT != 3 /* not NO_CLAMP */
+      if (acc_scaled < activation_min) acc_scaled = activation_min;
+      if (acc_scaled > activation_max) acc_scaled = activation_max;
+#endif
+
+      output[n] = (int8_t)acc_scaled;
+      sink += output[n];
+#endif /* FC_VARIANT == 4 */
+    }
+  }
+  uint64_t t1 = ReadMcycle();
+
+  uint64_t total_cycles = t1 - t0;
+  uint64_t cycles_per_iter = total_cycles / ITERS;
+  uint64_t cycles_per_channel = cycles_per_iter / N_CHANNELS;
+
+  printf("variant=%d\n", FC_VARIANT);
+  printf("total_cycles=%llu\n", (unsigned long long)total_cycles);
+  printf("cycles_per_iter=%llu\n", (unsigned long long)cycles_per_iter);
+  printf("cycles_per_channel=%llu\n", (unsigned long long)cycles_per_channel);
+  printf("sink=%d\n", sink);
+  return 0;
+}
