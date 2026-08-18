@@ -1230,6 +1230,64 @@ Doesn't change the "not applied to the default board" decision above —
 if anything, this is a further reason not to, since the real payoff is
 smaller than it first looked.
 
+### The ceiling saturates at 2 FUs: `MinorCPU`'s 2-wide issue front end, not FU count, is the real limiter
+
+Follow-up on the 2-FU result above: re-ran `int8dot_ceiling.c` at 3 and 4
+`FloatSimd` FUs, to check whether the pattern was "FU count still helps,
+just less each time" (diminishing returns) or something sharper.
+
+| FUs | cycles/iter | GFLOP/s | Δ vs. previous |
+|---|---|---|---|
+| 1 | 206 | 3.723 | — |
+| 2 | 170 | 4.510 | +21.2% |
+| 3 | 170 | 4.511 | **+0.0%** |
+| 4 | 170 | 4.511 | **+0.0%** |
+
+Not diminishing returns — a flat wall. 3 and 4 FUs give *exactly* zero
+further improvement over 2, down to the cycle. Notably this saturates at
+2 FUs even though the probe has 3 independent chains — if FU
+*availability* were still the constraint, a 3rd FU should let all three
+chains' compute ops run fully in parallel. It doesn't, because
+`RiscvMinorCPU`'s dual-issue front end (`executeIssueLimit`/
+`executeInputWidth`/`decodeInputWidth`/`executeCommitLimit` all `=2`,
+`src/cpu/minor/BaseMinorCPU.py:359-386`) caps total instructions issued
+per cycle at 2, across every instruction class combined (vector compute,
+vector loads via the separate `MemFU`, and this project's own scalar loop
+overhead) — a fixed property of the modeled CPU that no number of extra
+`FloatSimd` FU instances can work around. Correctness held (`sink`
+identical across all four runs).
+
+**Why the isolated probe reaches a GFLOP/s figure the real kernel can't
+get anywhere close to, even though it's measuring the exact same
+instruction sequence: the probe is deliberately too idealized to be a
+usage scenario, by design.** A ceiling probe's job is to answer "what's
+the best this hardware could possibly do for this instruction mix," not
+"what does the real workload achieve" — the gap between the two is the
+point, not a flaw. Two separate ways the probe is unrealistic relative to
+`dtln`:
+
+1. **Scope.** It's *only* the vector chain (`load -> widen -> widen ->
+   multiply -> reduce`) — none of the real kernel's surrounding cost (bias
+   add, quantization-multiplier rescale, activation clamp,
+   per-output-channel loop/call overhead, LSTM gate-combination logic).
+   None of that touches the `FloatSimd` FU, so more FUs can't help it, but
+   it still costs real cycles in the actual kernel.
+2. **Code shape.** Even restricted to just the vector-compute part, the
+   probe is *hand-interleaved* across 3 independent chains specifically to
+   extract whatever overlap the 2-wide issue front end allows. The real
+   kernel doesn't do that — each output channel's dot product runs as its
+   own separate, non-interleaved call.
+
+Tried porting the same chain-interleaving idea directly into the real
+kernel's own `out_c` loop next (below) — it did not reproduce the probe's
+gain, for exactly this reason. `3.723 GFLOP/s` isn't "what this kernel
+should hit"; it's a hard upper bound for one instruction sequence in
+isolation, and the real kernel's 18-21% against it is the honest measure
+of how far a much messier, real workload sits from that idealized best
+case. This section's finding sharpens that ceiling further: even in the
+*best possible* case, more `FloatSimd` FUs stops helping past 2, so this
+lever was never going to be a big win for the real kernel either.
+
 ### Tried: interleaving independent output-channel dot-product chains — mixed result, not applied
 
 Software-only follow-up to the FU analysis above: `int8dot_ceiling.c`

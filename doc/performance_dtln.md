@@ -330,7 +330,15 @@ correctly-rescaled 2-FU ceiling (4.510 vs. 3.723 GFLOP/s) actually
 much of its time on scalar work (bias add, requantization, activation
 clamping, LSTM gate logic) the FU count can't help. See "Correction: the
 2-FU experiment helps the real kernel much less than the synthetic probe
-suggested" in `gem5_integration.md` for the full breakdown. Not applied
+suggested" in `gem5_integration.md` for the full breakdown. **The lever
+tops out fast even in the idealized case**: re-running `int8dot_ceiling.c`
+at 3 and 4 FUs gives exactly zero further improvement over 2 (170
+cycles/iter flat) — `MinorCPU`'s 2-wide issue front end, not FU count, is
+the real cap. See "The ceiling saturates at 2 FUs" in `gem5_integration.md`
+for the full breakdown, including why the isolated probe reaches a
+GFLOP/s figure this real kernel can't get anywhere close to (the probe is
+deliberately idealized — pure vector chain, hand-interleaved for maximum
+overlap — with none of the real kernel's surrounding scalar cost). Not applied
 to this project's default board either way, since it changes what CPU is
 being modeled, not how well the code uses the modeled CPU. Loop unrolling
 and a vector-accumulate-then-reduce-once restructuring
