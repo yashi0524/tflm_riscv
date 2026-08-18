@@ -1,5 +1,44 @@
 # TFLite Micro: gem5 Support for riscv32_generic / riscv64_generic
 
+## Table of contents
+
+- [Overview](#overview)
+- [Environment blockers fixed first](#environment-blockers-fixed-first)
+- [gem5 SE-mode design](#gem5-se-mode-design)
+  - [Two non-obvious gem5 API requirements hit along the way](#two-non-obvious-gem5-api-requirements-hit-along-the-way)
+- [Files changed](#files-changed)
+  - [New, outside the tflite-micro clone (`/home/ajno5/work/2_pattern/tflm/sim_config/`)](#new-outside-the-tflite-micro-clone-homeajno5work2_patterntflmsim_config)
+  - [New, inside the tflite-micro clone (tracked)](#new-inside-the-tflite-micro-clone-tracked)
+  - [Modified](#modified)
+- [Verified working commands](#verified-working-commands)
+  - [`run_tflm_benchmark` (generic model benchmark) on `riscv64_generic` + gem5](#run_tflm_benchmark-generic-model-benchmark-on-riscv64_generic--gem5)
+- [gem5 Full-System (FS) bare-metal mode: `hello_world_test`](#gem5-full-system-fs-bare-metal-mode-hello_world_test)
+  - [New files](#new-files)
+  - [Bug found and fixed: `.sdata`/`.sbss` were silently excluded from copy/zero ranges](#bug-found-and-fixed-sdatasbss-were-silently-excluded-from-copyzero-ranges)
+  - [Bug found and fixed: `.init_array`/`.fini_array`/`.preinit_array` are emitted writable, producing an RWX FLASH segment](#bug-found-and-fixed-init_arrayfini_arraypreinit_array-are-emitted-writable-producing-an-rwx-flash-segment)
+  - [Wired into the Makefile as a proper target: `riscv64_baremetal`](#wired-into-the-makefile-as-a-proper-target-riscv64_baremetal)
+  - [Verified working commands](#verified-working-commands-1)
+  - [`tflm_benchmark` on `riscv64_baremetal`, and two more linker-script fixes it surfaced](#tflm_benchmark-on-riscv64_baremetal-and-two-more-linker-script-fixes-it-surfaced)
+- [Whisper support on `riscv64_baremetal`: a second, faster simulator](#whisper-support-on-riscv64_baremetal-a-second-faster-simulator)
+  - [Why the whisper config declares vector/float support the binary doesn't use](#why-the-whisper-config-declares-vectorfloat-support-the-binary-doesnt-use)
+- [The `.init_array` bug: silent vacuous test passes on `riscv64_baremetal`](#the-init_array-bug-silent-vacuous-test-passes-on-riscv64_baremetal)
+- [gem5 SE mode disabled](#gem5-se-mode-disabled)
+- [Per-op cycle counts on `riscv64_baremetal`: the two gaps that made every op read "0 ticks"](#per-op-cycle-counts-on-riscv64_baremetal-the-two-gaps-that-made-every-op-read-0-ticks)
+- [A vectorized `FULLY_CONNECTED` kernel: `riscv64_baremetal_vector`](#a-vectorized-fully_connected-kernel-riscv64_baremetal_vector)
+  - [The math, and why it needed a genuinely new target](#the-math-and-why-it-needed-a-genuinely-new-target)
+  - [The fast path itself](#the-fast-path-itself)
+  - [Bug found and fixed: the `if constexpr` guard didn't check `OutputType`](#bug-found-and-fixed-the-if-constexpr-guard-didnt-check-outputtype)
+  - [Results](#results)
+  - [Known limitations of this specific kernel](#known-limitations-of-this-specific-kernel)
+  - [LSTM vectorization: a real bug found and fixed in `Int8DotProductRvv`, unblocked by upgrading GCC](#lstm-vectorization-a-real-bug-found-and-fixed-in-int8dotproductrvv-unblocked-by-upgrading-gcc)
+  - [`Int8DotProductRvv`: widened from base `LMUL=1` to `LMUL=2`](#int8dotproductrvv-widened-from-base-lmul1-to-lmul2)
+  - [Why efficiency stays low even after vectorization: `MinorCPU`'s single shared `FloatSimd` functional unit](#why-efficiency-stays-low-even-after-vectorization-minorcpus-single-shared-floatsimd-functional-unit)
+  - [Measuring the real ceiling: `microbenchmark/int8dot_ceiling.c`](#measuring-the-real-ceiling-microbenchmarkint8dot_ceilingc)
+  - [Correction: the 2-FU experiment helps the real kernel much less than the synthetic probe suggested](#correction-the-2-fu-experiment-helps-the-real-kernel-much-less-than-the-synthetic-probe-suggested)
+  - [Tried: interleaving independent output-channel dot-product chains — mixed result, not applied](#tried-interleaving-independent-output-channel-dot-product-chains--mixed-result-not-applied)
+  - [Investigating clang as an alternative toolchain: builds clean, but crashes gem5 on the full `dtln` model](#investigating-clang-as-an-alternative-toolchain-builds-clean-but-crashes-gem5-on-the-full-dtln-model)
+- [Known limitations / follow-ups not yet done](#known-limitations--follow-ups-not-yet-done)
+
 ## Overview
 
 This memo documents the changes made to add gem5 as an alternative to QEMU
@@ -1190,6 +1229,68 @@ project's actual workload than the synthetic probe alone suggested.**
 Doesn't change the "not applied to the default board" decision above —
 if anything, this is a further reason not to, since the real payoff is
 smaller than it first looked.
+
+### Tried: interleaving independent output-channel dot-product chains — mixed result, not applied
+
+Software-only follow-up to the FU analysis above: `int8dot_ceiling.c`
+proved that hand-interleaving independent dot-product chains (all loads,
+then all widens, then all multiplies, then all reduces, instead of running
+each chain's full load->widen->multiply->reduce sequence to completion
+before starting the next) hides much of the shared `FloatSimd` FU's
+6-cycle latency. `FullyConnected()`'s `out_c` loop is exactly this shape —
+every output channel's dot product against the same input row is
+independent of every other one, computed by calling `Int8DotProductRvv()`
+once per channel, back-to-back. Tried applying the same interleaving
+technique there: a new `Int8DotProductRvvNx` helper computing N channels'
+dot products at once with their chains interleaved (sharing one input
+load/widen/`input_sum` reduction across all N, since the input row is the
+same for every channel), wired into the `out_c` loop in chunks of N with a
+scalar tail for the remainder. Correctness held throughout (all 4
+cross-shape models' CRC32s matched the scalar-target reference at every N
+tried).
+
+**N=3** (matching the ceiling probe's own chain count): regresses
+`FULLY_CONNECTED` by itself (70,821 -> 87,138 cycles, **+23.0%**) —
+disassembly showed why: this helper carries more simultaneously-live
+vector state per chain than the probe's chains do (each channel also needs
+its own `filter_sum` reduction, on top of the probe's plain
+load/widen/multiply/reduce), so 3-way spills here (6 whole-register
+`vs*r.v`/`vl*re*.v` spill/reload instructions per loop iteration) where
+the probe's pure 3-way didn't. But LSTM's gate computations — which route
+through this same `FullyConnected()` template — got *faster* despite the
+spilling (LSTM 1st call 578,992 -> 537,585, **-7.15%**; 2nd call 394,771
+-> 398,525, **+0.95%**), and since LSTM is ~91% of the model's cycles,
+whole-model total came out **2.08% better** (1,133,683 -> 1,110,103) even
+though the op it was modeled on (FC) got worse.
+
+**N=2** (tried specifically to eliminate the spilling): confirmed via
+disassembly that this fits within RVV's 32 registers with no spills at
+all — and made things worse across the board anyway: `FULLY_CONNECTED`
+70,821 -> 93,100 (**+31.5%**, worse than the spilling N=3 version), LSTM
+combined 973,763 -> 1,009,982 (**+3.72%**, a regression, unlike N=3's
+improvement), whole-model total 1,133,683 -> 1,191,571 (**+5.11% worse**).
+Eliminating the register spills did not recover the loss, or reverse its
+direction — pointing at something less mechanical than register pressure
+alone (the most likely candidate: GCC's own instruction scheduler is
+already doing a reasonable job overlapping the simple, un-interleaved
+per-channel chains in the baseline code, and restructuring into a larger,
+more complex helper function interferes with that more than it adds new
+overlap of its own — not confirmed further, since both variants already
+pointed the same direction: not worth pursuing).
+
+**Not applied.** The technique that closed a clean, reproducible gap in
+the isolated ceiling probe does not transfer cleanly to the real kernel:
+results are shape-dependent in a way that's hard to predict (net win for
+LSTM's gate shapes, net loss for FC's own shape, at the *same* interleave
+depth, through the *same* code path), and the one variant with no
+mechanical downside (N=2, no spilling) was the worst of the three
+configurations measured, not the best. Reverted to the original
+one-channel-at-a-time `Int8DotProductRvv()`; `fully_connected.h` is
+unchanged from the version documented above. Kept here as a genuine,
+measured negative result — like the vector-accumulate-then-reduce-once
+attempt above, worth recording precisely so it isn't tried again from a
+plausible-sounding first-principles argument without re-deriving why it
+didn't work.
 
 ### Investigating clang as an alternative toolchain: builds clean, but crashes gem5 on the full `dtln` model
 

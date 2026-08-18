@@ -1,0 +1,2 @@
+# Python bytecode cache from running 4_roofline_report.py / 5_gen_roofline_svg.py
+__pycache__/

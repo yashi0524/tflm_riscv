@@ -1,5 +1,16 @@
 # `dtln_noise_suppression.tflite` Performance & Roofline Analysis
 
+## Table of contents
+
+- [Per-op cycle counts: `dtln_noise_suppression.tflite` on `riscv64_baremetal`](#per-op-cycle-counts-dtln_noise_suppressiontflite-on-riscv64_baremetal)
+- [Vectorized `FULLY_CONNECTED` and LSTM (`riscv64_baremetal_vector`) vs. scalar baseline](#vectorized-fully_connected-and-lstm-riscv64_baremetal_vector-vs-scalar-baseline)
+- [Roofline analysis](#roofline-analysis)
+  - [Machine parameters](#machine-parameters)
+  - [Arithmetic intensity](#arithmetic-intensity)
+  - [Achieved performance vs. the roofline (gem5, cycle-accurate)](#achieved-performance-vs-the-roofline-gem5-cycle-accurate)
+- [Benchmark candidate comparison (FC/Conv layer shapes)](#benchmark-candidate-comparison-fcconv-layer-shapes)
+- [Reproducing](#reproducing)
+
 Deep-dive performance analysis for `dtln_noise_suppression.tflite`, split
 out of [`performance.md`](performance.md) (which stays the consolidated
 whole-run log across every benchmark in this project — `dtln_test` is just

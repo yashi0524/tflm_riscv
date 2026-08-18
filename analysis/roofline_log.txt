@@ -1,0 +1,27 @@
+Generated: 2026-08-18T02:06:39
+Model: tensorflow/lite/micro/examples/dtln/dtln_noise_suppression.tflite
+Machine: RiscvMinorCPU, 1 GHz, peak BW 12.8 GB/s, idealized peak compute 128.0 GFLOP/s, ridge point 10.0 FLOP/byte
+Empirical compute-roof ceiling: 3.723 GFLOP/s (microbenchmark/int8dot_ceiling.c)
+Input CRC32: scalar=0x3A690452 vector=0x3A690452
+Output CRC32: scalar=0x7E578D1C vector=0x7E578D1C
+
+### Arithmetic intensity
+
+| op | call | MACs | FLOPs | weight bytes | AI (FLOP/byte) |
+|---|---|---|---|---|---|
+| `UNIDIRECTIONAL_SEQUENCE_LSTM` | 1 | 197,120 | 394,240 | 197,120 | 2.00 (memory-bound) |
+| `UNIDIRECTIONAL_SEQUENCE_LSTM` | 2 | 131,072 | 262,144 | 131,072 | 2.00 (memory-bound) |
+| `FULLY_CONNECTED` | 1 | 32,896 | 65,792 | 32,896 | 2.00 (memory-bound) |
+
+### Achieved performance vs. the roofline (gem5, cycle-accurate)
+
+| op | call | variant | cycles | T (µs) | P (MFLOP/s) | efficiency vs. 3.723 GFLOP/s | cycles/weight-byte |
+|---|---|---|---|---|---|---|---|
+| `UNIDIRECTIONAL_SEQUENCE_LSTM` | 1 | scalar | 2,499,689 | 2499.69 | 157.72 | 4.24% | 12.68 |
+| `UNIDIRECTIONAL_SEQUENCE_LSTM` | 1 | vectorized | 573,952 | 573.95 | 686.89 | 18.45% | 2.91 |
+| `UNIDIRECTIONAL_SEQUENCE_LSTM` | 2 | scalar | 1,707,652 | 1707.65 | 153.51 | 4.12% | 13.03 |
+| `UNIDIRECTIONAL_SEQUENCE_LSTM` | 2 | vectorized | 394,391 | 394.39 | 664.68 | 17.85% | 3.01 |
+| `FULLY_CONNECTED` | 1 | scalar | 350,999 | 351.00 | 187.44 | 5.03% | 10.67 |
+| `FULLY_CONNECTED` | 1 | vectorized | 84,311 | 84.31 | 780.35 | 20.96% | 2.56 |
+| `LOGISTIC` | 1 | scalar | 88,887 | 88.89 | n/a (no FLOP model for this op) | -- | -- |
+| `LOGISTIC` | 1 | vectorized | 89,086 | 89.09 | n/a (no FLOP model for this op) | -- | -- |

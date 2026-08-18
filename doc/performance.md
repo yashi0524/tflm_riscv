@@ -1,5 +1,12 @@
 # TFLM RISC-V Performance Log
 
+## Table of contents
+
+- [`riscv64_baremetal` (FS / bare-metal mode, gem5 — cycle-accurate `RiscvMinorCPU`)](#riscv64_baremetal-fs--bare-metal-mode-gem5--cycle-accurate-riscvminorcpu)
+- [`riscv64_baremetal` (whisper — functional-only RISC-V ISS, no timing model)](#riscv64_baremetal-whisper--functional-only-risc-v-iss-no-timing-model)
+- [Reproducing](#reproducing)
+- [`riscv{32,64}_generic` (SE / syscall-emulation mode, gem5) — historical, now disabled](#riscv3264_generic-se--syscall-emulation-mode-gem5--historical-now-disabled)
+
 Consolidated numbers from every verified run across this project's
 simulator integrations. For the *why* behind each target/fix, see
 [`gem5_integration.md`](gem5_integration.md) — this file is just the
