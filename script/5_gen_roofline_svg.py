@@ -226,15 +226,15 @@ def render_svg(meta, points):
     H = footnote2Y + 16
 
     peak_bw = meta.get("peak_bw_gbps")
+    peak_compute = meta.get("peak_compute_gflops")
+    ceiling = meta.get("ceiling_gflops")
     ridge_idealized = meta.get("ridge_point")
     # The ridge point that actually matters for this project: where the
     # memory roof crosses the *measured* FU ceiling, not the idealized
     # peak-compute one -- everything left of it is memory-bound even
     # against what this CPU can genuinely sustain, which is the number
     # doc/gem5_integration.md treats as authoritative.
-    ridge_measured = (
-        meta["ceiling_gflops"] / peak_bw if peak_bw and meta.get("ceiling_gflops") else None
-    )
+    ridge_measured = meta["ceiling_gflops"] / peak_bw if peak_bw and ceiling else None
 
     ais = [p["ai"] for p in points]
     x_of_interest = ais + [v for v in (ridge_idealized, ridge_measured) if v]
@@ -306,30 +306,34 @@ def render_svg(meta, points):
                        f'stroke="{TEXT_MUTED}" stroke-width="2" stroke-dasharray="5 4"/>')
             svg.append(f'<text x="{px(x2)-6:.1f}" y="{py(peak_bw*x2)-8:.1f}" font-size="11.5" fill="{TEXT_SEC}" text-anchor="end">memory roof ({peak_bw} GB/s)</text>')
 
-    # Ridge point vs. the *measured* FU ceiling -- drawn first (so it's
-    # underneath, giving it visual priority isn't needed) but styled bold
-    # and blue to match the measured-ceiling line: this is the ridge point
-    # that actually matters for this project (see doc/gem5_integration.md
-    # -- the idealized 128 GFLOP/s figure was the wrong ceiling to begin
+    # Ridge point vs. the *measured* FU ceiling -- styled bold and blue to
+    # match the measured-ceiling line: this is the ridge point that
+    # actually matters for this project (see doc/gem5_integration.md --
+    # the idealized 128 GFLOP/s figure was the wrong ceiling to begin
     # with). Left of it, an op is memory-bound even against what this CPU
-    # can genuinely sustain, not just against a too-optimistic ideal.
-    if ridge_measured and x_dom[0] <= ridge_measured <= x_dom[1]:
-        x = px(ridge_measured)
+    # can genuinely sustain, not just against a too-optimistic ideal. A
+    # filled dot marks the actual point -- where the memory roof crosses
+    # the measured-ceiling line -- so it reads as a point, not just an
+    # abstract vertical line.
+    if ridge_measured and ceiling and x_dom[0] <= ridge_measured <= x_dom[1]:
+        x, y = px(ridge_measured), py(ceiling)
         svg.append(f'<line x1="{x:.1f}" y1="{MT}" x2="{x:.1f}" y2="{MT+plotH}" stroke="#2a78d6" '
                    f'stroke-width="2" stroke-dasharray="1 4"/>')
+        svg.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="5" fill="#2a78d6" stroke="#ffffff" stroke-width="1.5"/>')
         svg.append(f'<text x="{x+6:.1f}" y="{axisBottom-8}" font-size="11.5" fill="#2a78d6" font-weight="700">ridge (measured), {ridge_measured:.2f} FLOP/byte</text>')
 
     # Ridge point vs. the idealized peak-compute roof -- kept for contrast,
     # styled muted/secondary (same idealized-vs-measured distinction as the
-    # two roof lines below).
-    if ridge_idealized and x_dom[0] <= ridge_idealized <= x_dom[1]:
-        x = px(ridge_idealized)
+    # two roof lines below), dot at the same memory-roof/ceiling
+    # intersection logic.
+    if ridge_idealized and peak_compute and x_dom[0] <= ridge_idealized <= x_dom[1]:
+        x, y = px(ridge_idealized), py(peak_compute)
         svg.append(f'<line x1="{x:.1f}" y1="{MT}" x2="{x:.1f}" y2="{MT+plotH}" stroke="{AXIS}" '
                    f'stroke-width="1.5" stroke-dasharray="1 4"/>')
+        svg.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="5" fill="{AXIS}" stroke="#ffffff" stroke-width="1.5"/>')
         svg.append(f'<text x="{x+6:.1f}" y="{MT+14}" font-size="11" fill="{TEXT_MUTED}">ridge (idealized), {ridge_idealized:g} FLOP/byte</text>')
 
     # idealized peak-compute roof (the naive, too-optimistic ceiling -- kept for contrast)
-    peak_compute = meta.get("peak_compute_gflops")
     if peak_compute and y_dom[0] <= peak_compute <= y_dom[1]:
         y = py(peak_compute)
         svg.append(f'<line x1="{ML}" y1="{y:.1f}" x2="{ML+plotW}" y2="{y:.1f}" stroke="{AXIS}" '
@@ -337,7 +341,6 @@ def render_svg(meta, points):
         svg.append(f'<text x="{ML+plotW+8}" y="{y+4:.1f}" font-size="11" fill="{TEXT_MUTED}">idealized {peak_compute:g} GFLOP/s</text>')
 
     # empirically-measured FU ceiling (the real, authoritative one)
-    ceiling = meta.get("ceiling_gflops")
     if ceiling and y_dom[0] <= ceiling <= y_dom[1]:
         y = py(ceiling)
         svg.append(f'<line x1="{ML}" y1="{y:.1f}" x2="{ML+plotW}" y2="{y:.1f}" stroke="#2a78d6" '
