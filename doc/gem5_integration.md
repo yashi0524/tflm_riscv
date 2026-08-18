@@ -1205,15 +1205,30 @@ rebuild) under both configs:
 
 | | 1 FU cycles | 2 FU cycles | Cycle reduction | Efficiency @ 1 FU ceiling (3.723 GFLOP/s) | Efficiency @ 2 FU ceiling (4.510 GFLOP/s) |
 |---|---|---|---|---|---|
-| `FULLY_CONNECTED` | 70,821 | 66,381 | 6.27% | 24.95% | **21.98%** |
-| LSTM 1st call | 578,992 | 546,394 | 5.63% | 18.29% | **16.00%** |
-| LSTM 2nd call | 394,771 | 379,911 | 3.76% | 17.84% | **15.30%** |
-| **Whole-model** | 1,133,683 | 1,081,537 | **4.60%** | — | — |
+| `FULLY_CONNECTED` | 84,311 | 80,654 | 4.34% | 20.96% | **18.09%** |
+| LSTM 1st call | 573,952 | 542,501 | 5.48% | 18.45% | **16.11%** |
+| LSTM 2nd call | 394,391 | 377,801 | 4.21% | 17.85% | **15.39%** |
+| **Whole-model** | 1,141,740 | 1,089,804 | **4.55%** | — | — |
+
+> Re-measured 2026-08-18 (this row corrects an earlier version of this table
+> that used a stale baseline — `70,821`/`578,992`/`394,771` cycles — from
+> a build that predated a later fix without a full clean rebuild; the
+> `.d`-dependency-tracking gap noted elsewhere in this doc let a stale
+> `gen/` object slip through undetected across several re-confirmations
+> in the same session, since re-measuring the *same* stale binary just
+> reproduces the same wrong number. Caught by an unrelated later
+> measurement disagreeing with this table by an amount too large to be
+> gem5's normal ~0.5% run-to-run noise; re-verified via a full `rm -rf
+> gen/` from scratch, reproduced identically 4 times via 3 independent
+> methods (direct default-board run, the demo-minor config at
+> `MINOR_FLOAT_FU_COUNT=1`, and a repeat), before trusting it. The
+> qualitative conclusion below is unchanged — efficiency still goes
+> *down* with 2 FUs, not up — only the absolute cycle counts moved.
 
 **The real kernel gets roughly a third of what the synthetic probe
-predicted (4.6% whole-model vs. 14-21% for the probe at the same
+predicted (4.55% whole-model vs. 14-21% for the probe at the same
 shapes), and relative efficiency against the correctly-scaled ceiling
-actually goes *down* slightly, not up.** This is Amdahl's Law: the real
+actually goes *down*, not up.** This is Amdahl's Law: the real
 kernel's cycle count includes a lot that never touches the `FloatSimd`
 FU at all — bias addition, quantization-multiplier rescaling, activation
 min/max clamping, LSTM's gate-combination/cell-state logic, function-call
@@ -1222,7 +1237,7 @@ vector FU. `int8dot_ceiling.c` is almost pure FU-bound compute by design
 (that's the point of a ceiling probe), so it isn't diluted by any of this
 and gets close to the full benefit; the real kernel is. Since the ceiling
 itself grew *more* (21.2%) than the real kernel's achieved performance did
-(~6-9%), efficiency-against-ceiling nets out lower with 2 FUs, not higher.
+(~4-5%), efficiency-against-ceiling nets out lower with 2 FUs, not higher.
 
 **Conclusion: the 2-FU hardware-model change is a weaker lever for this
 project's actual workload than the synthetic probe alone suggested.**
@@ -1308,7 +1323,7 @@ cross-shape models' CRC32s matched the scalar-target reference at every N
 tried).
 
 **N=3** (matching the ceiling probe's own chain count): regresses
-`FULLY_CONNECTED` by itself (70,821 -> 87,138 cycles, **+23.0%**) —
+`FULLY_CONNECTED` by itself (84,311 -> 87,902 cycles, **+4.26%**) —
 disassembly showed why: this helper carries more simultaneously-live
 vector state per chain than the probe's chains do (each channel also needs
 its own `filter_sum` reduction, on top of the probe's plain
@@ -1316,17 +1331,25 @@ load/widen/multiply/reduce), so 3-way spills here (6 whole-register
 `vs*r.v`/`vl*re*.v` spill/reload instructions per loop iteration) where
 the probe's pure 3-way didn't. But LSTM's gate computations — which route
 through this same `FullyConnected()` template — got *faster* despite the
-spilling (LSTM 1st call 578,992 -> 537,585, **-7.15%**; 2nd call 394,771
--> 398,525, **+0.95%**), and since LSTM is ~91% of the model's cycles,
-whole-model total came out **2.08% better** (1,133,683 -> 1,110,103) even
-though the op it was modeled on (FC) got worse.
+spilling (LSTM 1st call 573,952 -> 536,376, **-6.55%**; 2nd call 394,391
+-> 398,647, **+1.08%**; combined 968,343 -> 935,023, **-3.44%**), and
+since LSTM is ~91% of the model's cycles, whole-model total came out
+**2.79% better** (1,141,740 -> 1,109,852) even though the op it was
+modeled on (FC) got worse.
+
+> Re-measured 2026-08-18 against the corrected baseline above (was
+> compared against the same stale `70,821`/`578,992`/`394,771` figures —
+> the interleaved variant's own absolute cycle count barely moved on
+> re-measurement, 87,138 -> 87,902, well within normal noise, so only the
+> *baseline* it was being compared against was ever wrong here). The
+> qualitative conclusion is unchanged.
 
 **N=2** (tried specifically to eliminate the spilling): confirmed via
 disassembly that this fits within RVV's 32 registers with no spills at
 all — and made things worse across the board anyway: `FULLY_CONNECTED`
-70,821 -> 93,100 (**+31.5%**, worse than the spilling N=3 version), LSTM
-combined 973,763 -> 1,009,982 (**+3.72%**, a regression, unlike N=3's
-improvement), whole-model total 1,133,683 -> 1,191,571 (**+5.11% worse**).
+84,311 -> 93,128 (**+10.46%**, worse than the spilling N=3 version), LSTM
+combined 968,343 -> 1,007,631 (**+4.06%**, a regression, unlike N=3's
+improvement), whole-model total 1,141,740 -> 1,189,164 (**+4.15% worse**).
 Eliminating the register spills did not recover the loss, or reverse its
 direction — pointing at something less mechanical than register pressure
 alone (the most likely candidate: GCC's own instruction scheduler is
@@ -1442,8 +1465,9 @@ worth the effort relative to what it would unblock — GCC 13.4.0-1 already
 produces correct, validated results for every number in this project.
 `gen/riscv64_baremetal_vector_aarch64_default_gcc/` was rebuilt clean with
 GCC after this investigation (bit-for-bit matching the documented
-baseline: `Output CRC32: 0x7E578D1C`, gem5 total 1,133,683 ticks, whisper
-455,304). The wrapper scripts remain saved in `script/clang_wrapper/` as
+baseline: `Output CRC32: 0x7E578D1C`, gem5 total 1,141,740 ticks — see the
+note on "Correction: the 2-FU experiment..." above about this figure
+being corrected from an earlier, stale `1,133,683` — whisper 455,304). The wrapper scripts remain saved in `script/clang_wrapper/` as
 a working, documented reference — useful for narrower experiments (like
 the ceiling-microbenchmark cross-validation that prompted this
 investigation, or `hello_world_test`-scale sanity checks) — but not

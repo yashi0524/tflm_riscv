@@ -324,7 +324,7 @@ second `FloatSimd` FU instance, via a config copied from the sibling
 `softmax` project): a synthetic probe at this kernel's exact instruction
 mix showed a real 10-21% speedup — but re-running the actual `dtln`
 kernel under the same 2-FU config (not just the probe) showed only a
-4.60% whole-model cycle reduction, with efficiency against the
+4.55% whole-model cycle reduction, with efficiency against the
 correctly-rescaled 2-FU ceiling (4.510 vs. 3.723 GFLOP/s) actually
 *lower* than at 1 FU, not higher — Amdahl's Law: the real kernel spends
 much of its time on scalar work (bias add, requantization, activation
