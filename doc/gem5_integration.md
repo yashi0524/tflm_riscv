@@ -37,6 +37,7 @@
   - [Correction: the 2-FU experiment helps the real kernel much less than the synthetic probe suggested](#correction-the-2-fu-experiment-helps-the-real-kernel-much-less-than-the-synthetic-probe-suggested)
   - [The ceiling saturates at 2 FUs: `MinorCPU`'s 2-wide issue front end, not FU count, is the real limiter](#the-ceiling-saturates-at-2-fus-minorcpus-2-wide-issue-front-end-not-fu-count-is-the-real-limiter)
   - [Realistic FULLY_CONNECTED bottleneck decomposition: vector work dominates, not scalar overhead](#realistic-fully_connected-bottleneck-decomposition-vector-work-dominates-not-scalar-overhead)
+  - [Applied: inlining `MultiplyByQuantizedMultiplier` — the single biggest win found in this project](#applied-inlining-multiplybyquantizedmultiplier--the-single-biggest-win-found-in-this-project)
   - [Tried: interleaving independent output-channel dot-product chains — mixed result, not applied](#tried-interleaving-independent-output-channel-dot-product-chains--mixed-result-not-applied)
   - [Investigating clang as an alternative toolchain: builds clean, but crashes gem5 on the full `dtln` model](#investigating-clang-as-an-alternative-toolchain-builds-clean-but-crashes-gem5-on-the-full-dtln-model)
 - [Known limitations / follow-ups not yet done](#known-limitations--follow-ups-not-yet-done)
@@ -1402,6 +1403,94 @@ scalar" — it's that the 2-wide issue front end caps the achievable
 benefit inside the vector work itself, and the real kernel's un-interleaved
 code shape can't reach even that capped benefit as cleanly as the
 isolated probe does.
+
+### Applied: inlining `MultiplyByQuantizedMultiplier` — the single biggest win found in this project
+
+Direct follow-up to the requantize stage's ~23% share above: disassembled
+the actual call site and found `MultiplyByQuantizedMultiplier(int32_t,
+int32_t, int)` compiles to a genuine out-of-line `jalr` — confirmed via
+the relocation table (`R_RISCV_CALL_PLT
+_ZN6tflite29MultiplyByQuantizedMultiplierEiii`) — because the shared
+version in `tensorflow/lite/kernels/internal/common.cc` is declared
+`TFLITE_NOINLINE`. That's deliberate upstream code-size discipline (the
+function is called from many kernels across the codebase; inlining it
+everywhere would bloat every call site), but on this specific hot path
+it's called once per output channel — 257 times for `dtln`'s FC alone,
+plus every LSTM gate matmul (8 gate weight matrices × 2 LSTM calls) — so
+the call/return overhead (caller-saved register spills around the call,
+the jump itself, the callee's own prologue/epilogue) pays out repeatedly
+in a way it wouldn't at a single call site elsewhere.
+
+Added a byte-for-byte copy of the same algorithm as a local, force-inlined
+`MultiplyByQuantizedMultiplierInlined()` in `fully_connected.h` (the
+shared `TFLITE_NOINLINE` version is untouched everywhere else in the
+codebase — this doesn't change upstream behavior or code size anywhere
+except this one file). Purely a call-overhead fix, no numerical change:
+rebuilt clean, re-verified correctness against all 4 cross-shape models
+(`dtln`, `mnist_lstm`, `micro_speech_quantized`, `hello_world_int8`) —
+every CRC32 matched exactly, both before and after.
+
+**First version applied it unconditionally (both scalar and RVV builds,
+since the algorithm doesn't depend on `__riscv_vector`) — and that broke
+the scalar baseline.** A clean A/B rebuild (`rm -rf gen`, not a
+stale-build artifact) showed dtln's *scalar*-target LSTM cycles jumped
+from 2,498,098 to 4,651,956 (**+86%**) with nothing else changed. Most
+likely cause: this inline copy gets duplicated into the scalar path's
+much larger per-element loop body (a genuine `K`-iteration scalar loop,
+unlike the RVV path's tight ~8-instruction vector chain), bloating that
+function's code size enough to cause real I-cache pressure on gem5's
+64 kB 4-way L1 — not confirmed further, since the fix (below) resolved
+it without needing to. This mattered a lot: every "vectorized speedup vs.
+scalar baseline" number in `performance_dtln.md` depends on the scalar
+baseline staying exactly as it was, so an inflated scalar denominator
+would have silently made every speedup number in this project look
+better than it really is. Fixed by scoping the inlined version to
+`#if defined(__riscv_vector)` only — the scalar path falls back to the
+original shared, `TFLITE_NOINLINE` function, matching how every other
+optimization in this file is already gated. Verified: scalar baseline
+restored bit-for-bit (351,280/2,498,098/1,704,241 cycles, identical to
+before either change), vector-target win fully intact (unchanged from the
+table below).
+
+**Result: a 29.34% whole-model cycle reduction** — bigger than every
+other optimization in this project combined (`LMUL` widening: 25-34% on
+the vector portion alone; 2 FUs: 4-6%; interleaving: mixed, -3% to +10%).
+
+| | Before | After | Change |
+|---|---|---|---|
+| `FULLY_CONNECTED` | 84,311 | 54,858 | **-34.93%** |
+| LSTM 1st call | 573,952 | 395,600 | **-31.07%** |
+| LSTM 2nd call | 394,391 | 270,328 | **-31.46%** |
+| `LOGISTIC` (untouched control — doesn't call `FullyConnected()`) | 89,086 | 86,014 | -3.45% (noise floor) |
+| **Whole-model** | 1,141,740 | 806,800 | **-29.34%** |
+
+Efficiency against the measured ceiling (3.723 GFLOP/s) moved
+correspondingly: FC 20.96% -> **32.21%**, LSTM-1 18.45% -> **26.77%**,
+LSTM-2 17.85% -> **26.05%**. `LOGISTIC`'s -3.45% move (an op this change
+doesn't touch at all) is the noise floor for this kind of comparison —
+confirms the effect is isolated to what actually changed, not measurement
+drift.
+
+**Applied and kept** — unlike every other experiment in this section
+(2-FU, interleaving, the `filter_offset==0` skip), this one is now part of
+the project's standing kernel, not a reverted diagnostic. The mechanism
+(removing call/return overhead) is well-understood and predictable in
+direction, unlike the earlier `filter_offset==0` attempt which looked
+equally "obviously free" but measurably backfired via a GCC
+scheduling artifact (see "Tried: interleaving" below for another instance
+of that same lesson) — this one doesn't touch the vector code's
+scheduling at all, only removes a scalar call, and the result matches
+what the mechanism predicts.
+
+This also means every cycle count and percentage in the sections above
+this one (the 2-FU correction, the ceiling-saturation experiment, and the
+bottleneck-decomposition percentages themselves) was measured **before**
+this fix, against what's now a superseded baseline. Their qualitative
+conclusions (2-wide issue width caps FU-count benefit; vector work is the
+majority of real cost; the isolated ceiling probe overstates real-kernel
+gains) are unaffected, but the exact cycle counts and percentages in
+those sections reflect the pre-inlining kernel and haven't been
+re-measured against the new baseline.
 
 ### Tried: interleaving independent output-channel dot-product chains — mixed result, not applied
 
