@@ -239,6 +239,12 @@ Same board as the sibling `gemm` project's
   clang isn't used here despite giving a similar, slightly lower number in
   a cross-check): 206 cycles/iteration, `3.723 GFLOP/s`.** Every efficiency
   figure below is measured against this number, not the idealized one.
+  **Caveat added 2026-08-19, see the "Second correction" under "Achieved
+  performance vs. the roofline" below: this number itself assumes a warm
+  cache (the probe reuses a small, permanently-L1-resident buffer), which
+  this project's actual single-shot `Invoke()` workload never gets — a
+  third, lower, cold-cache ceiling applies to the real achieved-performance
+  comparison.**
 - Idealized ridge point = 128 / 12.8 = 10 FLOP/byte (wrong, see above).
 - **Measured ridge point = 3.723 / 12.8 ≈ 0.29 FLOP/byte** — the one that
   actually matters: an op only needs `AI` above ~0.29 FLOP/byte to be
@@ -276,11 +282,24 @@ parameters" above for why 10.0 FLOP/byte isn't a real ridge point for this
 CPU). Against the *measured* ridge point (≈0.29 FLOP/byte), `AI (2.0) >>
 ridge`: **these ops are actually compute-bound** — or more precisely,
 issue/latency-bound against `MinorCPU`'s single shared `FloatSimd`
-functional unit, not starved for memory bandwidth at all. The attainable
+functional unit, not starved for memory *bandwidth* at all. The attainable
 ceiling for all three is the measured **3.723 GFLOP/s**, not
 `AI × peak_BW = 2.0 × 12.8 = 25.6 GFLOP/s` — that formula only applies to
-ops that are genuinely memory-bound, which, on this CPU, none of this
+ops that are genuinely bandwidth-bound, which, on this CPU, none of this
 project's kernels are.
+
+> **This "compute-bound" conclusion is about sustained bandwidth
+> specifically, and doesn't mean memory doesn't matter here.** A
+> different, third failure mode the classic compute-roof-vs-bandwidth-roof
+> model has no axis for at all: per-access DRAM *latency* on a single,
+> never-cached read. `M=1` batch-1 GEMVs like these read each weight byte
+> exactly once per `Invoke()` — nowhere near enough traffic to saturate
+> 12.8 GB/s, so "bandwidth-bound" is a real and correct conclusion — but
+> each individual read still has to complete a full DRAM round-trip with
+> nothing to overlap it against on this in-order core, which dominates the
+> real, cold-cache achieved performance below far more than FU issue width
+> does. See the "Second correction" in "Achieved performance vs. the
+> roofline" below for the measured numbers.
 
 ### Achieved performance vs. the roofline (gem5, cycle-accurate)
 
@@ -315,20 +334,66 @@ idealized `25.6 GFLOP/s` figure.
 > (see below) — was 83,959/573,947/394,316 cycles, ~18-21% efficiency,
 > before that fix. Same conclusion, meaningfully closer to the ceiling.
 
-**Verdict: the vectorized kernel is already within ~3× of what this CPU
-can genuinely sustain for this instruction mix, not 30-40× short of it.**
-That's a fundamentally different picture than the old (wrong) `25.6
-GFLOP/s`-based numbers implied (~2.6-3.1%, suggesting the vast majority
-of headroom was still on the table). The real, measured ceiling — ~26-32%
-efficiency for the vectorized ops — is consistent with the sibling `gemm`
-project's own finding that even a carefully hand-optimized kernel with
-broken dependency chains and minimized memory traffic (`opt_gemm_blocked`)
-still only reaches ~6-12% of *its* measured compute roof, since per-call
-fixed costs and loop overhead persist regardless of vectorization quality.
-This kernel actually does comparably or better. Cycles/weight-byte still
-drops sharply from vectorization (~11.5-14.1 → ~1.7-2.1) — that part of
-the original analysis was correct and unaffected by the ceiling fix; only
-the *denominator being compared against* was wrong.
+**Second correction (2026-08-19): the 3.723 GFLOP/s ceiling itself
+assumes a warm cache — the real, achievable ceiling for this kernel's
+actual single-shot execution is much lower, and `FULLY_CONNECTED`'s
+efficiency against it is ~94%, not 32.21%.** `int8dot_ceiling.c`'s probe
+(and `fc_bottleneck.c`'s original, default configuration) both reuse a
+small buffer across many iterations, so after the first touch it's
+permanently L1-resident — that's a legitimate *compute/FU-throughput*
+ceiling (the most this CPU's single `FloatSimd` FU can do once data is
+already available), but it structurally can't represent this kernel's
+actual condition: `dtln_test` calls `Invoke()` exactly once, and
+`FullyConnected()`'s filter tensor is read exactly once, ever, in the
+program's lifetime — a genuinely cold DRAM access every single time, not
+a cache hit. Confirmed by directly instrumenting the real kernel (204
+cycles/channel for the dot product alone) and by reproducing the same
+cold condition in a formalized `fc_bottleneck.c` mode
+(`FC_CACHE_MODE=1`, `DOT_ONLY`: 200 cycles/channel, within 2%) — see
+"Realistic FULLY_CONNECTED bottleneck decomposition" in
+[`gem5_integration.md`](gem5_integration.md) for the full derivation,
+including confirming a 16x larger L1 changes nothing (the miss is
+compulsory, not capacity-bound).
+
+That cold-cache ceiling is **1.278 GFLOP/s** (dot-only) / **1.077
+GFLOP/s** (full pipeline) at FC's exact shape — against which
+`FULLY_CONNECTED`'s actual **1199.31 MFLOP/s** is **93.8%** efficient
+(and actually *beats* the full-pipeline cold ceiling, 111%, because the
+real kernel hoists its requantize constants out of the loop while
+`fc_bottleneck.c`'s deliberately-`volatile` version doesn't — see the
+same section for why). This has not been separately measured for the
+LSTM rows below — their gate shapes (`K=128` and `K=257`, mixed within
+each call) don't exactly match FC's probed shape (`K=128,N=257`), so
+extrapolating the same ~94% figure to them is plausible (same read-once
+access pattern, same dominant cost) but unverified; a LSTM-shaped cold
+probe hasn't been built.
+
+**Verdict: the vectorized kernel is not "30-40× short" (the original,
+wrong `25.6 GFLOP/s` framing) or even "~3× short" (the first correction's
+`3.723 GFLOP/s` framing) — for `FULLY_CONNECTED`, it's already within
+~6% of what this specific single-shot invocation can genuinely achieve.**
+Both earlier framings were honest measurements against the wrong
+denominator: the idealized ceiling ignored `MinorCPU`'s FU count/issue
+width entirely, and the measured-but-warm ceiling ignored that this
+workload's weights are never cached before they're read. Neither error
+was small — first a ~13x gap (25.6 vs. 3.723), then another ~3x gap
+(3.723 vs. ~1.2 warm-vs-cold) — and both pointed the same direction: the
+kernel had *less* headroom left than each successive "wrong" ceiling
+suggested, not more. Cycles/weight-byte still drops sharply from
+vectorization (~11.5-14.1 → ~1.7-2.1) — that part of the original
+analysis was correct throughout and unaffected by either ceiling
+correction; only the *denominator being compared against* kept being
+wrong.
+
+The comparison to the sibling `gemm` project's `opt_gemm_blocked` result
+(~6-12% of its own measured compute roof) that motivated the first
+correction no longer applies as directly — that comparison assumed both
+projects were being measured against a comparable kind of ceiling.
+`gemm`'s workload reuses tiles across a real blocked loop structure
+(genuine warm-cache reuse is part of its own achieved performance, not
+just its ceiling), while this project's single-shot `Invoke()` per-op
+weight reads have no such reuse to exploit. The two are no longer an
+apples-to-apples comparison once cache state is accounted for.
 
 **Why efficiency plateaus around here even with a correct, `LMUL`-widened
 kernel: `MinorCPU`'s single shared `FloatSimd` functional unit.** (Note:
