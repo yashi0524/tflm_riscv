@@ -106,19 +106,43 @@
  * real kernel's directly-instrumented 204. Not chased down further into a
  * permanent fix in this file, since direct instrumentation of the real
  * kernel already gives reliable ground truth (the table in
- * gem5_integration.md) -- but if this file's absolute numbers matter for
- * something in the future, add an equivalent eviction step before timing
- * first.
+ * gem5_integration.md). Formalized as a permanent build-time mode instead
+ * of a one-off scratch copy -- see FC_CACHE_MODE below -- so both the
+ * warm-cache and cold-cache ceilings can be reproduced directly from this
+ * file instead of hand-patching a throwaway copy each time.
  *
  * What this file IS still good for: fast iteration on relative,
  * within-itself comparisons (e.g. "does skipping the bias add measurably
  * change cycles at all") without needing to touch and revert the real
  * kernel each time -- the non-dot stages (bias/requant/clamp) aren't
  * memory-bound the way the dot product is, so their relative deltas are
- * more trustworthy than the dot product's absolute number. What it is NOT
- * reliable for, as currently configured: absolute cycle counts for the
- * dot-product-dominated stages, or precise percentage-of-total splits --
- * use the direct-instrumentation numbers in gem5_integration.md for those.
+ * more trustworthy than the dot product's absolute number even in
+ * FC_CACHE_MODE=0 (warm). For absolute, real-kernel-comparable numbers,
+ * use FC_CACHE_MODE=1 (cold) -- see below.
+ *
+ * FC_CACHE_MODE (set via -DFC_CACHE_MODE=N at compile time, default 0):
+ *   0 = WARM -- original behavior: filter/input/bias are written by the
+ *       init loops immediately before timing and reused across all ITERS
+ *       passes, so after the first touch they're permanently L1-resident.
+ *       This is a *compute* ceiling: the best this op's instruction mix
+ *       can do assuming its operands are already in cache. It is NOT
+ *       representative of the real kernel's actual memory environment --
+ *       see the fidelity-gap discussion above.
+ *   1 = COLD -- touches a 256 KiB `volatile` distractor buffer (4x this
+ *       target's real 64 KiB L1) immediately after the init loops but
+ *       before timing starts, evicting filter/input/bias back out, then
+ *       runs exactly one timed pass (ITERS is forced to 1 -- re-evicting
+ *       between repeated passes just to average them isn't worth gem5's
+ *       simulation cost, and a "ceiling" is a reference bound, not a
+ *       statistic that needs averaging). This reproduces the real
+ *       kernel's actual condition: every weight byte read exactly once,
+ *       never previously cached (confirmed to land within 2% of the real
+ *       kernel's directly-instrumented cycles/channel -- see "Realistic
+ *       FULLY_CONNECTED bottleneck decomposition" in gem5_integration.md).
+ *       This is the *memory-latency* ceiling: the best this op can do
+ *       given its actual, unavoidable per-invocation cache-miss pattern.
+ * Build both: `make run-fc-bottleneck` (warm) and
+ * `make run-fc-bottleneck-cold` (cold) -- see ./Makefile.
  */
 
 #define N_CHANNELS 257
@@ -127,6 +151,21 @@
 
 #ifndef FC_VARIANT
 #define FC_VARIANT 0
+#endif
+
+#ifndef FC_CACHE_MODE
+#define FC_CACHE_MODE 0
+#endif
+
+#if FC_CACHE_MODE == 1
+#define FC_ITERS 1
+/* 256 KiB: 4x this target's real 64 KiB L1 (sim_config/
+ * gem5_riscv_baremetal_fs.py) -- confirmed sufficient to fully evict
+ * filter/input/bias (see gem5_integration.md). `volatile` so GCC can't
+ * prove the writes are dead and elide the whole loop. */
+static volatile int8_t g_evict_buf[262144];
+#else
+#define FC_ITERS ITERS
 #endif
 
 static uint32_t rng_state = 12345u;
@@ -208,6 +247,15 @@ int main(void) {
     bias[n] = (int32_t)rand_int8() * 1000;
   }
 
+#if FC_CACHE_MODE == 1
+  /* Evict filter/input/bias back out of L1 before timing starts, so the
+   * timed pass below sees the same genuinely-cold state the real kernel's
+   * single Invoke() call does -- without this, the init loops just above
+   * leave this data resident, silently reproducing the warm-cache
+   * artifact this mode exists to avoid. */
+  for (int i = 0; i < (int)sizeof(g_evict_buf); ++i) g_evict_buf[i] = (int8_t)i;
+#endif
+
   /* volatile, not const: the real kernel reads these from a
    * FullyConnectedParams struct populated at Prepare() time from the
    * model's flatbuffer -- genuine runtime values GCC cannot see the
@@ -231,7 +279,7 @@ int main(void) {
   int32_t sink = 0;
 
   uint64_t t0 = ReadMcycle();
-  for (int it = 0; it < ITERS; ++it) {
+  for (int it = 0; it < FC_ITERS; ++it) {
     /* Same anti-hoisting trick as int8dot_ceiling.c: without this, the
      * compiler can prove every outer iteration computes the same 257
      * outputs and hoist the whole loop out. */
@@ -271,13 +319,22 @@ int main(void) {
   uint64_t t1 = ReadMcycle();
 
   uint64_t total_cycles = t1 - t0;
-  uint64_t cycles_per_iter = total_cycles / ITERS;
+  uint64_t cycles_per_iter = total_cycles / FC_ITERS;
   uint64_t cycles_per_channel = cycles_per_iter / N_CHANNELS;
 
+  /* FLOPs = 2 per MAC (matching this project's roofline methodology --
+   * see analysis/roofline_log.txt -- counts only the dot product's MACs,
+   * not the scalar bias/requant/clamp stages, so this is comparable
+   * across all 5 FC_VARIANTs and against the real kernel's own numbers). */
+  long total_flops = (long)N_CHANNELS * K_DEPTH * 2L * FC_ITERS;
+  long gflops_milli = (total_flops * 1000L) / (long)total_cycles;
+
   printf("variant=%d\n", FC_VARIANT);
+  printf("cache_mode=%s\n", (FC_CACHE_MODE == 1) ? "cold" : "warm");
   printf("total_cycles=%llu\n", (unsigned long long)total_cycles);
   printf("cycles_per_iter=%llu\n", (unsigned long long)cycles_per_iter);
   printf("cycles_per_channel=%llu\n", (unsigned long long)cycles_per_channel);
+  printf("GFLOP/s=%ld.%03ld\n", gflops_milli / 1000, gflops_milli % 1000);
   printf("sink=%d\n", sink);
   return 0;
 }

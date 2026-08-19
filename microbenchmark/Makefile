@@ -8,7 +8,8 @@
 #   source ../script/0_env_var_setup.sh
 #   make run                                              # GCC 13.4.0-1 (default, authoritative -- see doc/gem5_integration.md)
 #   make run TOOLCHAIN_ROOT=../script/clang_wrapper/       # clang-18 cross-check
-#   make run-fc-bottleneck                                # builds+runs all 5 fc_bottleneck.c variants, see that file's own header comment
+#   make run-fc-bottleneck                                # builds+runs all 5 fc_bottleneck.c variants, warm cache (FC_CACHE_MODE=0)
+#   make run-fc-bottleneck-cold                            # same 5 variants, cold cache (FC_CACHE_MODE=1) -- see fc_bottleneck.c's header comment
 #   make clean
 
 TFLM_VEC_DIR := ../tflite-micro/tensorflow/lite/micro/riscv64_baremetal_vector
@@ -49,12 +50,28 @@ fc_bottleneck_riscv_v%: fc_bottleneck.c $(TFLM_VEC_DIR)/start_semi.S $(TFLM_VEC_
 
 run-fc-bottleneck: $(FC_BINS)
 	@for v in $(FC_VARIANTS); do \
-	  echo "=== FC_VARIANT=$$v ==="; \
+	  echo "=== FC_VARIANT=$$v (warm cache) ==="; \
 	  gem5.opt -d m5out_fc_v$$v $(SIM_CONFIG) ./fc_bottleneck_riscv_v$$v; \
 	done
 
+# --- same 5 variants, built with FC_CACHE_MODE=1 (cold cache: evict then
+# a single timed pass, reproducing the real kernel's actual memory
+# environment -- see fc_bottleneck.c's header comment) ---
+FC_COLD_BINS := $(addsuffix _cold,$(FC_BINS))
+
+fc_bottleneck_riscv_v%_cold: fc_bottleneck.c $(TFLM_VEC_DIR)/start_semi.S $(TFLM_VEC_DIR)/linker_semi.ld
+	$(CC) $(CFLAGS) -DFC_VARIANT=$* -DFC_CACHE_MODE=1 -c fc_bottleneck.c -o fc_bottleneck_v$*_cold.o
+	$(CC) $(LDFLAGS) -o $@ $(TFLM_VEC_DIR)/start_semi.S fc_bottleneck_v$*_cold.o \
+	  -Wl,--start-group -lc -lm -lgcc -Wl,--end-group
+
+run-fc-bottleneck-cold: $(FC_COLD_BINS)
+	@for v in $(FC_VARIANTS); do \
+	  echo "=== FC_VARIANT=$$v (cold cache) ==="; \
+	  gem5.opt -d m5out_fc_v$${v}_cold $(SIM_CONFIG) ./fc_bottleneck_riscv_v$${v}_cold; \
+	done
+
 clean:
-	rm -f *.o $(BIN) $(FC_BINS)
+	rm -f *.o $(BIN) $(FC_BINS) $(FC_COLD_BINS)
 	rm -rf m5out m5out_fc_v*
 
-.PHONY: run run-fc-bottleneck clean
+.PHONY: run run-fc-bottleneck run-fc-bottleneck-cold clean
