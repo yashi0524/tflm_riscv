@@ -1389,12 +1389,58 @@ real kernel's 1.203 GFLOP/s at this shape) — that gap is real and still
 unexplained, but it is not caused by register spilling in the real
 kernel, and no further lever has been identified here.
 
+**Follow-up (2026-08-19, same day): the gap is fully explained — it's a
+cache-warmth artifact in `fc_bottleneck.c`'s own benchmark methodology,
+not anything about the real kernel.** Isolated the dot-product stage
+specifically with a minimal 2-point `mcycle` probe (immediately before
+and after the `Int8DotProductRvv` call, avoiding the boundary-count
+inflation the 4-stage probe above carries) and got **204 cycles/channel**
+for the real kernel — consistent with the 4-stage probe's 203, so not a
+probe-placement artifact. `fc_bottleneck.c`'s own `FC_VARIANT=4`
+(`DOT_ONLY`) measures only **74 cycles/channel** in its normal
+configuration (`ITERS=20`, same `filter[257][128]` array reused every
+pass) for the *identical* instruction sequence — a 2.76x gap that static
+disassembly can't explain, since the code is the same.
+
+The difference is cache state, not code. `fc_bottleneck.c`'s own init
+loops write `filter`/`input`/`bias` immediately before the timed region,
+and `ITERS=20` reuses that same ~33 KB array on every pass, so after the
+first touch it's essentially permanently resident in the 64 KB L1 —
+even the `ITERS=1` single-pass case inherits this, since the init loops
+still just wrote it. The real kernel's `FullyConnected()` sees none of
+that: its filter tensor was last touched at model-load time, and the
+LSTM ops that run immediately before it in the same `dtln` inference
+have a much larger combined working set that evicts it from L1 well
+before `FullyConnected()` gets to read it — a genuinely cold cache on
+every single invocation, never a warm, self-reused one.
+
+Confirmed directly: patched a scratch copy of `fc_bottleneck.c`
+(`ITERS=1`, `FC_VARIANT=4`) to touch a 256 KiB `volatile` distractor
+buffer (4x the L1) immediately before the timed region, reproducing a
+genuinely cold cache the same way the preceding LSTM ops do in the real
+model. Result: **200 cycles/channel** — within 2% of the real kernel's
+204. The entire 2.76x "gap" was this benchmark measuring an artificially
+cache-hot scenario the real kernel never gets to be in; there is no
+inefficiency in `FullyConnected()` to explain or fix here.
+
+This also retroactively explains the smaller, already-known
+`ITERS=1`-vs-`ITERS=20` gap in `FC_VARIANT=0` (29,732 vs. 25,492
+cycles/pass, ~17%): that's the same effect at much smaller magnitude,
+because the untouched `ITERS=1` case still benefits from the init loops'
+implicit warm-up — it only pays the cost of one compulsory miss per
+cache line, not a genuinely cold cache. The 256 KiB eviction step above
+is what actually reproduces the real kernel's memory environment;
+`ITERS=1` alone does not.
+
 `fc_bottleneck.c` itself is kept in the microbenchmark directory as a
-real, working tool with this fidelity gap clearly documented in its own
-header comment, since it's still directionally useful and much faster to
-iterate on than rebuilding the whole benchmark, but its *absolute* cycle
-counts should not be trusted without cross-checking against direct
-instrumentation.
+real, working tool, since it's still directionally useful for
+stage-relative ablation (bias/requant/clamp cost deltas, which aren't
+memory-bound the way the dot product is) and much faster to iterate on
+than rebuilding the whole benchmark — but its *absolute* cycle counts,
+as currently configured, reflect a warm-cache best case, not the real
+kernel's actual memory environment; don't trust them for absolute
+comparisons without either cross-checking against direct instrumentation
+or adding an equivalent cache-eviction step first.
 
 **What actually resolved it: instrumenting the real kernel directly**,
 the same technique used to root-cause the original offset-truncation bug
@@ -1706,16 +1752,18 @@ broken.
 ## Known limitations / follow-ups not yet done
 
 - A previously-suspected register-spill bug in the real `FullyConnected()`'s
-  per-channel loop was investigated and ruled out (2026-08-19 recheck) — see
-  "Realistic FULLY_CONNECTED bottleneck decomposition" above. Fresh
-  disassembly of a clean rebuild shows the quantization scalars already
-  have clean register allocation post-inlining-fix; the reload pattern
-  that suggested otherwise turned out to belong to
-  `microbenchmark/fc_bottleneck.c`'s own deliberate `volatile` qualifiers,
-  not the real kernel. The 2.581 vs. 1.203 GFLOP/s gap between that
-  microbenchmark and the real kernel is still real and still unexplained,
-  but not for the reason previously documented here — no register-pressure
-  fix is warranted, and no replacement lever has been identified.
+  per-channel loop was investigated and ruled out, and the 2.581 vs. 1.203
+  GFLOP/s gap against `microbenchmark/fc_bottleneck.c` that motivated it
+  was fully explained the same day (2026-08-19) — see "Realistic
+  FULLY_CONNECTED bottleneck decomposition" above. Short version: the gap
+  is a cache-warmth artifact in the microbenchmark, not a real-kernel
+  inefficiency — `fc_bottleneck.c` keeps its own filter array resident in
+  L1 across repeated iterations in a way the real kernel's single,
+  post-LSTM-eviction invocation never gets to be. Reproducing a genuinely
+  cold cache in the microbenchmark (a 256 KiB eviction touch before
+  timing) closes the gap to within 2%. No fix is needed in
+  `FullyConnected()` itself, and no register-pressure or memory-locality
+  lever remains open here.
 - `keyword_benchmark` and `person_detection_benchmark` (the two dedicated
   benchmark binaries under `tensorflow/lite/micro/benchmarks/`, as opposed
   to the generic `tflm_benchmark`) haven't been tried on `riscv{32,64}_generic`

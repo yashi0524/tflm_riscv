@@ -82,27 +82,43 @@
  * of the gap and restoring the correct 3-reduction instruction sequence
  * (verified via disassembly).
  *
- * A real gap remains even so (~25,000 vs. 84,311 for FC_VARIANT=0), most
- * likely from register-pressure/instruction-scheduling differences: the
- * real FullyConnected() has many more live locals in scope around the same
- * inlined Int8DotProductRvv call (filter_shape, output_shape, the whole
- * FullyConnectedParams struct, etc.) than this tight standalone loop does,
- * and this project has already found more than once that MinorCPU's
- * in-order, latency-bound pipeline is sensitive to exactly this kind of
- * surrounding code shape in ways that are hard to predict from first
- * principles (see "Tried: interleaving..." in gem5_integration.md for
- * another instance of the same lesson). Not chased down further -- direct
- * instrumentation of the real kernel already gives reliable ground truth
- * (the table in gem5_integration.md), so closing this file's absolute-
- * number gap further wasn't worth the effort relative to what it would
- * unblock.
+ * A real gap remained even so (~25,000 vs. 84,311 for FC_VARIANT=0), and
+ * an earlier version of this comment attributed it to register-pressure/
+ * instruction-scheduling differences from the real FullyConnected()'s
+ * larger surrounding scope. That theory was investigated further and
+ * disproven (2026-08-19): a fresh disassembly of a clean rebuild showed
+ * the real kernel's per-channel loop has clean register allocation, no
+ * spilling, for the scalar quantization constants -- see "Realistic
+ * FULLY_CONNECTED bottleneck decomposition" in gem5_integration.md.
+ *
+ * The actual cause, confirmed the same day: this file's own cache-warmth
+ * artifact, not anything about the real kernel. The init loops above write
+ * `filter`/`input`/`bias` immediately before the timed region, and
+ * ITERS=20 reuses that same ~33 KB array every pass -- so after the first
+ * touch it's essentially permanently resident in the 64 KB L1. The real
+ * kernel's FullyConnected() never gets that: its filter tensor was last
+ * touched at model-load time, and the LSTM ops that run immediately
+ * before it in the same dtln inference have a much larger combined
+ * working set that evicts it from L1 first -- a genuinely cold cache on
+ * every invocation. Reproducing that cold state here (touching a 256 KiB
+ * `volatile` distractor buffer right before timing, in a scratch copy)
+ * brought FC_VARIANT=4's 74 cycles/channel up to 200 -- within 2% of the
+ * real kernel's directly-instrumented 204. Not chased down further into a
+ * permanent fix in this file, since direct instrumentation of the real
+ * kernel already gives reliable ground truth (the table in
+ * gem5_integration.md) -- but if this file's absolute numbers matter for
+ * something in the future, add an equivalent eviction step before timing
+ * first.
  *
  * What this file IS still good for: fast iteration on relative,
  * within-itself comparisons (e.g. "does skipping the bias add measurably
  * change cycles at all") without needing to touch and revert the real
- * kernel each time. What it is NOT reliable for: absolute cycle counts, or
- * precise percentage-of-total splits -- use the direct-instrumentation
- * numbers in gem5_integration.md for those.
+ * kernel each time -- the non-dot stages (bias/requant/clamp) aren't
+ * memory-bound the way the dot product is, so their relative deltas are
+ * more trustworthy than the dot product's absolute number. What it is NOT
+ * reliable for, as currently configured: absolute cycle counts for the
+ * dot-product-dominated stages, or precise percentage-of-total splits --
+ * use the direct-instrumentation numbers in gem5_integration.md for those.
  */
 
 #define N_CHANNELS 257
