@@ -1,7 +1,5 @@
 # Build artifacts (see int8dot_ceiling.c's header comment for build commands,
-# or just `make run` / `make run TOOLCHAIN_ROOT=../script/clang_wrapper/`)
-*.o
-*_riscv
-fc_bottleneck_riscv_v*
-m5out/
-m5out_fc_v*/
+# or just `make run` / `make run TOOLCHAIN_ROOT=../script/clang_wrapper/`) --
+# both benchmarks' .o/binaries/m5out* land entirely under these two dirs.
+int8dot_ceiling/
+fc_bottleneck/

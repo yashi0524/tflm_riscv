@@ -1454,17 +1454,30 @@ so no plausible L1 size changes anything here.
 `1`=cold — see `fc_bottleneck.c`'s header comment) instead of leaving
 this as a one-off scratch-copy experiment, so both ceilings are
 reproducible directly: `make run-fc-bottleneck` /
-`make run-fc-bottleneck-cold`. Full 5-variant comparison at this shape:
+`make run-fc-bottleneck-cold`.
+
+**Follow-up (2026-08-19, same day): unified `FC_ITERS=1` for both cache
+modes.** The table below originally came from a WARM build that still
+ran `ITERS=20` (reusing the same resident array every pass) against a
+COLD build forced to a single pass — two variables differing at once
+(cache state *and* iteration count), not just the one the mode flag is
+named for. Pinned WARM to the same single timed pass as COLD (see
+`fc_bottleneck.c`'s `FC_ITERS` definition); the array is already
+L1-resident from the init-loop touch by the first pass either way, so
+this mostly just removes the confound rather than changing what WARM
+represents. Refreshed all 10 numbers below accordingly — `DOT_ONLY`
+moved from 74 to 76 cyc/ch (3.450 → 3.365 GFLOP/s), a ~2.7% shift; COLD
+numbers are unchanged since COLD was already single-pass.
 
 | Variant | Warm cyc/ch | Warm GFLOP/s | Cold cyc/ch | Cold GFLOP/s | Cold/warm |
 |---|---|---|---|---|---|
-| `FULL` (0) | 99 | 2.580 | 237 | 1.077 | 2.39x |
-| `NO_BIAS` (1) | 95 | 2.677 | 234 | 1.093 | 2.46x |
-| `NO_REQUANT` (2) | 83 | 3.058 | 224 | 1.138 | 2.70x |
-| `NO_CLAMP` (3) | 91 | 2.807 | 216 | 1.180 | 2.37x |
-| `DOT_ONLY` (4) | 74 | 3.450 | 200 | 1.278 | 2.70x |
+| `FULL` (0) | 115 | 2.211 | 237 | 1.077 | 2.06x |
+| `NO_BIAS` (1) | 110 | 2.309 | 234 | 1.093 | 2.13x |
+| `NO_REQUANT` (2) | 92 | 2.767 | 224 | 1.138 | 2.43x |
+| `NO_CLAMP` (3) | 91 | 2.799 | 216 | 1.180 | 2.37x |
+| `DOT_ONLY` (4) | 76 | 3.365 | 200 | 1.278 | 2.63x |
 
-Every variant slows 2.4-2.7x cold vs. warm, consistent with the dot
+Every variant slows 2.1-2.6x cold vs. warm, consistent with the dot
 product (memory-bound either way) dominating all of them. The cold
 `FULL` ceiling (237 cyc/ch, 1.077 GFLOP/s) now lands close to the real
 kernel's directly-instrumented total (213.5 cyc/ch, 1.203 GFLOP/s,
@@ -1475,6 +1488,13 @@ while the real kernel hoists it once. That's the expected direction for
 a microbenchmark built with deliberately pessimistic anti-optimization
 tricks: not a strict upper bound, but now a *realistic* reference instead
 of the warm ceiling's near-3x-too-optimistic one.
+
+`DOT_ONLY`'s warm figure (3.365 GFLOP/s) is also tracked as the roofline
+report/SVG's third ceiling line (`script/4_roofline_report.py
+--measure-fc-warm-ceiling`) — same op, shape, and single-pass count as
+the cold-cache ceiling, differing only in cache state, so it isolates
+exactly the cache-eviction cost against the cold line rather than mixing
+in the int8dot ceiling's different harness.
 
 `fc_bottleneck.c` itself is kept in the microbenchmark directory as a
 real, working tool, useful for stage-relative ablation (bias/requant/

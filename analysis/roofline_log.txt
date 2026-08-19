@@ -1,7 +1,9 @@
-Generated: 2026-08-18T23:32:23
+Generated: 2026-08-19T03:44:13
 Model: tensorflow/lite/micro/examples/dtln/dtln_noise_suppression.tflite
 Machine: RiscvMinorCPU, 1 GHz, peak BW 12.8 GB/s, idealized peak compute 128.0 GFLOP/s, ridge point 10.0 FLOP/byte
 Empirical compute-roof ceiling: 3.723 GFLOP/s (microbenchmark/int8dot_ceiling.c)
+Empirical fc_bottleneck warm-cache ceiling: 3.365 GFLOP/s (microbenchmark/fc_bottleneck.c, FC_VARIANT=4 FC_CACHE_MODE=0 -- same op, shape, and single-pass count as the cold-cache ceiling below, differing only in whether operands were evicted from L1 first)
+Empirical cold-cache ceiling: 1.278 GFLOP/s (microbenchmark/fc_bottleneck.c, FC_VARIANT=4 FC_CACHE_MODE=1 -- the achievable ceiling for this project's actual single-shot Invoke() workload, see doc/performance_dtln.md's "Second correction")
 Input CRC32: scalar=0x3A690452 vector=0x3A690452
 Output CRC32: scalar=0x7E578D1C vector=0x7E578D1C
 
@@ -15,13 +17,13 @@ Output CRC32: scalar=0x7E578D1C vector=0x7E578D1C
 
 ### Achieved performance vs. the roofline (gem5, cycle-accurate)
 
-| op | call | variant | cycles | T (µs) | P (MFLOP/s) | efficiency vs. 3.723 GFLOP/s | cycles/weight-byte |
-|---|---|---|---|---|---|---|---|
-| `UNIDIRECTIONAL_SEQUENCE_LSTM` | 1 | scalar | 2,497,048 | 2497.05 | 157.88 | 4.24% | 12.67 |
-| `UNIDIRECTIONAL_SEQUENCE_LSTM` | 1 | vectorized | 395,320 | 395.32 | 997.27 | 26.79% | 2.01 |
-| `UNIDIRECTIONAL_SEQUENCE_LSTM` | 2 | scalar | 1,703,705 | 1703.70 | 153.87 | 4.13% | 13.00 |
-| `UNIDIRECTIONAL_SEQUENCE_LSTM` | 2 | vectorized | 270,343 | 270.34 | 969.67 | 26.05% | 2.06 |
-| `FULLY_CONNECTED` | 1 | scalar | 351,575 | 351.58 | 187.14 | 5.03% | 10.69 |
-| `FULLY_CONNECTED` | 1 | vectorized | 54,695 | 54.70 | 1202.89 | 32.31% | 1.66 |
-| `LOGISTIC` | 1 | scalar | 88,145 | 88.15 | n/a (no FLOP model for this op) | -- | -- |
-| `LOGISTIC` | 1 | vectorized | 86,185 | 86.19 | n/a (no FLOP model for this op) | -- | -- |
+| op | call | variant | cycles | T (µs) | P (MFLOP/s) | efficiency vs. 3.723 GFLOP/s (warm) | efficiency vs. 3.365 GFLOP/s (fc warm) | efficiency vs. 1.278 GFLOP/s (cold) | cycles/weight-byte |
+|---|---|---|---|---|---|---|---|---|---|
+| `UNIDIRECTIONAL_SEQUENCE_LSTM` | 1 | scalar | 2,497,048 | 2497.05 | 157.88 | 4.24% | 4.69% | 12.35% | 12.67 |
+| `UNIDIRECTIONAL_SEQUENCE_LSTM` | 1 | vectorized | 395,320 | 395.32 | 997.27 | 26.79% | 29.64% | 78.03% | 2.01 |
+| `UNIDIRECTIONAL_SEQUENCE_LSTM` | 2 | scalar | 1,703,705 | 1703.70 | 153.87 | 4.13% | 4.57% | 12.04% | 13.00 |
+| `UNIDIRECTIONAL_SEQUENCE_LSTM` | 2 | vectorized | 270,343 | 270.34 | 969.67 | 26.05% | 28.82% | 75.87% | 2.06 |
+| `FULLY_CONNECTED` | 1 | scalar | 351,575 | 351.58 | 187.14 | 5.03% | 5.56% | 14.64% | 10.69 |
+| `FULLY_CONNECTED` | 1 | vectorized | 54,695 | 54.70 | 1202.89 | 32.31% | 35.75% | 94.12% | 1.66 |
+| `LOGISTIC` | 1 | scalar | 88,145 | 88.15 | n/a (no FLOP model for this op) | -- | -- | -- | -- |
+| `LOGISTIC` | 1 | vectorized | 86,185 | 86.19 | n/a (no FLOP model for this op) | -- | -- | -- | -- |

@@ -87,6 +87,12 @@ def parse_report(log_path):
     m = re.search(r"Empirical compute-roof ceiling: ([\d.]+) GFLOP/s", "\n".join(lines))
     if m:
         meta["ceiling_gflops"] = float(m.group(1))
+    m = re.search(r"Empirical fc_bottleneck warm-cache ceiling: ([\d.]+) GFLOP/s", "\n".join(lines))
+    if m:
+        meta["fc_warm_ceiling_gflops"] = float(m.group(1))
+    m = re.search(r"Empirical cold-cache ceiling: ([\d.]+) GFLOP/s", "\n".join(lines))
+    if m:
+        meta["cold_ceiling_gflops"] = float(m.group(1))
 
     ai_rows, perf_rows = [], []
     i = 0
@@ -223,11 +229,14 @@ def render_svg(meta, points):
     legend2Y = axisBottom + 90
     footnoteY = axisBottom + 114
     footnote2Y = footnoteY + 16
-    H = footnote2Y + 16
+    footnote3Y = footnote2Y + 16
+    H = footnote3Y + 16
 
     peak_bw = meta.get("peak_bw_gbps")
     peak_compute = meta.get("peak_compute_gflops")
     ceiling = meta.get("ceiling_gflops")
+    fc_warm_ceiling = meta.get("fc_warm_ceiling_gflops")
+    cold_ceiling = meta.get("cold_ceiling_gflops")
     ridge_idealized = meta.get("ridge_point")
     # The ridge point that actually matters for this project: where the
     # memory roof crosses the *measured* FU ceiling, not the idealized
@@ -235,10 +244,20 @@ def render_svg(meta, points):
     # against what this CPU can genuinely sustain, which is the number
     # doc/gem5_integration.md treats as authoritative.
     ridge_measured = meta["ceiling_gflops"] / peak_bw if peak_bw and ceiling else None
+    # fc_bottleneck's own warm-cache ridge point -- same op/shape/pass-count
+    # as the cold-cache ceiling below, differing only in cache state, so
+    # this and ridge_cold isolate exactly the cache-eviction effect.
+    ridge_fc_warm = fc_warm_ceiling / peak_bw if peak_bw and fc_warm_ceiling else None
+    # Cold-cache ridge point: where the memory roof crosses the cold-cache
+    # ceiling instead of the warm one -- the ridge point that matters for
+    # this project's *actual* single-shot workload (see "Second
+    # correction" in doc/performance_dtln.md). Lower than ridge_measured,
+    # since the cold ceiling itself is lower.
+    ridge_cold = cold_ceiling / peak_bw if peak_bw and cold_ceiling else None
 
     ais = [p["ai"] for p in points]
-    x_of_interest = ais + [v for v in (ridge_idealized, ridge_measured) if v]
-    gs = [p["gflops"] for p in points] + [meta["ceiling_gflops"]]
+    x_of_interest = ais + [v for v in (ridge_idealized, ridge_measured, ridge_fc_warm, ridge_cold) if v]
+    gs = [p["gflops"] for p in points] + [v for v in (ceiling, fc_warm_ceiling, cold_ceiling) if v]
     x_lo = min(0.5, min(x_of_interest) / 2) if x_of_interest else 0.5
     x_hi = max(5.0, max(x_of_interest, default=10) * 2)
     y_lo = min(0.03, min(gs) / 3) if gs else 0.03
@@ -278,7 +297,7 @@ def render_svg(meta, points):
     svg = []
     svg.append(f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" font-family="Helvetica, Arial, sans-serif">')
     svg.append(f'<rect x="0" y="0" width="{W}" height="{H}" fill="#ffffff"/>')
-    svg.append(f'<text x="{ML}" y="22" font-size="15" fill="{TEXT_PRI}" font-weight="700">dtln roofline: scalar vs. vectorized vs. measured FU ceiling</text>')
+    svg.append(f'<text x="{ML}" y="22" font-size="15" fill="{TEXT_PRI}" font-weight="700">dtln roofline: scalar vs. vectorized vs. warm/fc-warm/cold-cache ceilings</text>')
 
     for v in x_ticks:
         x = px(v)
@@ -322,6 +341,34 @@ def render_svg(meta, points):
         svg.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="5" fill="#2a78d6" stroke="#ffffff" stroke-width="1.5"/>')
         svg.append(f'<text x="{x+6:.1f}" y="{axisBottom-8}" font-size="11.5" fill="#2a78d6" font-weight="700">ridge (measured), {ridge_measured:.2f} FLOP/byte</text>')
 
+    # Ridge point vs. fc_bottleneck's own *warm-cache* ceiling -- same op,
+    # shape, and single-pass count as the cold-cache ceiling below,
+    # differing only in cache state (see build_report's comment in
+    # script/4_roofline_report.py). Styled amber to stay distinct from the
+    # int8dot warm-ceiling blue and cold-ceiling purple; label placed at
+    # mid-plot height since its x is often close to ridge_measured's,
+    # avoiding text collision with the bottom/top labels of the other two.
+    if ridge_fc_warm and fc_warm_ceiling and x_dom[0] <= ridge_fc_warm <= x_dom[1]:
+        x, y = px(ridge_fc_warm), py(fc_warm_ceiling)
+        svg.append(f'<line x1="{x:.1f}" y1="{MT}" x2="{x:.1f}" y2="{MT+plotH}" stroke="#c98500" '
+                   f'stroke-width="2" stroke-dasharray="1 4"/>')
+        svg.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="5" fill="#c98500" stroke="#ffffff" stroke-width="1.5"/>')
+        svg.append(f'<text x="{x+6:.1f}" y="{MT+plotH/2:.1f}" font-size="11.5" fill="#c98500" font-weight="700">ridge (fc warm), {ridge_fc_warm:.2f} FLOP/byte</text>')
+
+    # Ridge point vs. the *cold-cache* ceiling -- the ridge point that
+    # matters for this project's actual achieved-performance points below,
+    # since dtln_test's single Invoke() call never gets a warm cache (see
+    # "Second correction" in doc/performance_dtln.md). Styled purple to
+    # stay visually distinct from the warm-measured blue and idealized
+    # gray lines while still reading as "the important one" (bold, solid
+    # dot) rather than the idealized line's muted treatment.
+    if ridge_cold and cold_ceiling and x_dom[0] <= ridge_cold <= x_dom[1]:
+        x, y = px(ridge_cold), py(cold_ceiling)
+        svg.append(f'<line x1="{x:.1f}" y1="{MT}" x2="{x:.1f}" y2="{MT+plotH}" stroke="#7c5cbf" '
+                   f'stroke-width="2" stroke-dasharray="1 4"/>')
+        svg.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="5" fill="#7c5cbf" stroke="#ffffff" stroke-width="1.5"/>')
+        svg.append(f'<text x="{x+6:.1f}" y="{MT+28}" font-size="11.5" fill="#7c5cbf" font-weight="700">ridge (cold-cache), {ridge_cold:.2f} FLOP/byte</text>')
+
     # Ridge point vs. the idealized peak-compute roof -- kept for contrast,
     # styled muted/secondary (same idealized-vs-measured distinction as the
     # two roof lines below), dot at the same memory-roof/ceiling
@@ -340,12 +387,40 @@ def render_svg(meta, points):
                    f'stroke-width="1.5" stroke-dasharray="2 5" opacity="0.8"/>')
         svg.append(f'<text x="{ML+plotW+8}" y="{y+4:.1f}" font-size="11" fill="{TEXT_MUTED}">idealized {peak_compute:g} GFLOP/s</text>')
 
-    # empirically-measured FU ceiling (the real, authoritative one)
+    # empirically-measured FU ceiling, warm cache (int8dot_ceiling.c) --
+    # correct for "how fast could this FU go if data were already cached",
+    # but not the ceiling this project's actual achieved-performance
+    # points below can be measured against -- see the cold-cache line.
     if ceiling and y_dom[0] <= ceiling <= y_dom[1]:
         y = py(ceiling)
         svg.append(f'<line x1="{ML}" y1="{y:.1f}" x2="{ML+plotW}" y2="{y:.1f}" stroke="#2a78d6" '
                    f'stroke-width="2.5" stroke-dasharray="2 4"/>')
-        svg.append(f'<text x="{ML+plotW+8}" y="{y+4:.1f}" font-size="11.5" fill="#2a78d6" font-weight="700">{ceiling:g} GFLOP/s measured</text>')
+        svg.append(f'<text x="{ML+plotW+8}" y="{y+4:.1f}" font-size="11.5" fill="#2a78d6" font-weight="700">{ceiling:g} GFLOP/s measured (warm)</text>')
+
+    # fc_bottleneck's own empirically-measured warm-cache ceiling
+    # (FC_VARIANT=4 FC_CACHE_MODE=0) -- same op/shape/pass-count as the
+    # cold-cache line below, differing only in cache state, so the vertical
+    # gap between this line and the cold one isolates exactly the
+    # cache-eviction cost. Its value (often close to the int8dot warm
+    # ceiling above) can land within a few px of that line's label, so the
+    # label is nudged down to stay legible.
+    if fc_warm_ceiling and y_dom[0] <= fc_warm_ceiling <= y_dom[1]:
+        y = py(fc_warm_ceiling)
+        svg.append(f'<line x1="{ML}" y1="{y:.1f}" x2="{ML+plotW}" y2="{y:.1f}" stroke="#c98500" '
+                   f'stroke-width="2" stroke-dasharray="2 4"/>')
+        svg.append(f'<text x="{ML+plotW+8}" y="{y+16:.1f}" font-size="11.5" fill="#c98500" font-weight="700">{fc_warm_ceiling:g} GFLOP/s measured (fc warm)</text>')
+
+    # empirically-measured cold-cache ceiling (fc_bottleneck.c,
+    # FC_VARIANT=4 FC_CACHE_MODE=1) -- the ceiling that actually applies to
+    # this project's achieved-performance points below, since dtln_test's
+    # single Invoke() call never gets a warm cache. Solid, not dashed, and
+    # drawn last (on top) to read as the authoritative line -- see "Second
+    # correction" in doc/performance_dtln.md.
+    if cold_ceiling and y_dom[0] <= cold_ceiling <= y_dom[1]:
+        y = py(cold_ceiling)
+        svg.append(f'<line x1="{ML}" y1="{y:.1f}" x2="{ML+plotW}" y2="{y:.1f}" stroke="#7c5cbf" '
+                   f'stroke-width="2.5"/>')
+        svg.append(f'<text x="{ML+plotW+8}" y="{y+4:.1f}" font-size="11.5" fill="#7c5cbf" font-weight="700">{cold_ceiling:g} GFLOP/s measured (cold)</text>')
 
     # scatter points
     jitter = compute_x_jitter(points)
@@ -380,9 +455,12 @@ def render_svg(meta, points):
         leg_x2 += 20 + 8 * len(label) + 22
 
     svg.append(f'<text x="{ML}" y="{footnoteY}" font-size="10.5" fill="{TEXT_MUTED}">'
-               'Gray dashed lines: idealized 1-vector-MAC-instr/cycle ceiling and its ridge point (too optimistic -- see doc/gem5_integration.md). '
-               'Blue dashed lines: empirically-measured FloatSimd FU ceiling and its ridge point (authoritative).</text>')
+               'Gray dashed lines: idealized 1-vector-MAC-instr/cycle ceiling (too optimistic). '
+               'Blue dashed lines: warm-cache FU ceiling (int8dot_ceiling.c -- correct FU throughput, but data is never actually this cached).</text>')
     svg.append(f'<text x="{ML}" y="{footnote2Y}" font-size="10.5" fill="{TEXT_MUTED}">'
+               'Amber dashed lines: fc_bottleneck.c warm-cache ceiling (FC_CACHE_MODE=0) -- same op/shape/pass-count as the purple cold-cache line, differing only in cache state. '
+               'Purple solid line: cold-cache ceiling (FC_CACHE_MODE=1) -- the ceiling that actually applies here, since dtln_test reads every weight tensor exactly once, never cached.</text>')
+    svg.append(f'<text x="{ML}" y="{footnote3Y}" font-size="10.5" fill="{TEXT_MUTED}">'
                'Points nudged a few px apart within each arithmetic-intensity cluster for legibility -- '
                'FULLY_CONNECTED and both LSTM calls share the exact same AI (2.00 FLOP/byte).</text>')
 
@@ -411,7 +489,9 @@ def main():
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     with open(args.out, "w") as f:
         f.write(svg)
-    print(f"wrote {args.out} ({len(points)} points, ceiling={meta.get('ceiling_gflops')} GFLOP/s)")
+    print(f"wrote {args.out} ({len(points)} points, ceiling={meta.get('ceiling_gflops')} "
+          f"GFLOP/s warm, {meta.get('fc_warm_ceiling_gflops')} GFLOP/s fc warm, "
+          f"{meta.get('cold_ceiling_gflops')} GFLOP/s cold)")
 
 
 if __name__ == "__main__":

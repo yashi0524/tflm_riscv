@@ -18,15 +18,39 @@ independent sources, only one of which is this benchmark run itself:
      that part too, generically for FULLY_CONNECTED and
      UNIDIRECTIONAL_SEQUENCE_LSTM (the only two op types the roofline
      table covers).
-  3. The empirical compute-roof CEILING (default 3.723 GFLOP/s): from a
-     *separate* microbenchmark, ../microbenchmark/int8dot_ceiling.c, not
-     from this benchmark run at all -- it measures what MinorCPU's single
-     shared FloatSimd FU can sustain for this kernel's instruction mix in
-     isolation. This script does NOT re-measure it by default (pass
-     --measure-ceiling to actually build+run that microbenchmark and
-     parse its result, or --ceiling to supply an already-known value --
-     both override the hardcoded default, which goes stale if the
-     toolchain or kernel's instruction mix changes).
+  3. Three empirical CEILINGs, all from *separate* microbenchmarks, not
+     from this benchmark run at all:
+       - WARM (default 3.723 GFLOP/s): ../microbenchmark/int8dot_ceiling.c,
+         measures what MinorCPU's single shared FloatSimd FU can sustain
+         for this kernel's instruction mix in isolation, with its small
+         operand buffer permanently L1-resident (reused across many
+         iterations) -- a compute/FU-throughput ceiling.
+       - FC WARM (default 3.365 GFLOP/s): ../microbenchmark/fc_bottleneck.c's
+         FC_VARIANT=4 (DOT_ONLY) built with FC_CACHE_MODE=0 (default), a
+         single timed pass with operands left L1-resident from the
+         init-loop touch -- same op, same real FC shape (N=257/K=128) and
+         single-pass count as the COLD ceiling below, differing from it
+         only in whether the operands were evicted first. Isolates cache
+         state as the sole variable between FC WARM and COLD, unlike the
+         WARM ceiling above (a differently-shaped, differently-harnessed
+         microbenchmark).
+       - COLD (default 1.278 GFLOP/s): ../microbenchmark/fc_bottleneck.c's
+         FC_VARIANT=4 (DOT_ONLY) built with FC_CACHE_MODE=1, which evicts
+         its operands out of L1 before a single timed pass -- reproduces
+         the real kernel's actual memory environment (dtln_test.cc calls
+         Invoke() exactly once, so every weight tensor is read exactly
+         once, ever, never previously cached -- see "Realistic
+         FULLY_CONNECTED bottleneck decomposition" in
+         doc/gem5_integration.md). This, not the warm ceilings, is the
+         achievable ceiling for this project's actual single-shot
+         workload -- see "Second correction" in doc/performance_dtln.md.
+     This script does NOT re-measure any of them by default (pass
+     --measure-ceiling / --measure-fc-warm-ceiling / --measure-cold-ceiling
+     to actually build+run the respective microbenchmark and parse its
+     result, or --ceiling / --fc-warm-ceiling / --cold-ceiling to supply
+     an already-known value -- all six override their hardcoded default,
+     which goes stale if the toolchain or kernel's instruction mix
+     changes).
 
 Known limitation: assumes 1 timestep per UNIDIRECTIONAL_SEQUENCE_LSTM
 node call. True for dtln_noise_suppression's two LSTM layers (see
@@ -40,7 +64,8 @@ script/0_env_var_setup.sh in the same shell -- same requirement as
 script/2_run_benchmark.sh and script/3_extract_lstm_shapes.py):
 
   python3 /home/ajno5/work/2_pattern/tflm/script/4_roofline_report.py
-  python3 /home/ajno5/work/2_pattern/tflm/script/4_roofline_report.py --measure-ceiling
+  python3 /home/ajno5/work/2_pattern/tflm/script/4_roofline_report.py \\
+      --measure-ceiling --measure-fc-warm-ceiling --measure-cold-ceiling
   python3 /home/ajno5/work/2_pattern/tflm/script/4_roofline_report.py \\
       --scalar-log /path/to/captured_scalar.log \\
       --vector-log /path/to/captured_vector.log   # skip re-running gem5
@@ -89,6 +114,14 @@ RIDGE_POINT = PEAK_COMPUTE_GFLOPS / PEAK_BW_GBPS
 # microbenchmark/int8dot_ceiling.c, GCC 13.4.0-1 -- re-measure (--measure-ceiling)
 # if the toolchain or Int8DotProductRvv's instruction mix changes.
 DEFAULT_CEILING_GFLOPS = 3.723
+
+# microbenchmark/fc_bottleneck.c, FC_VARIANT=4 FC_CACHE_MODE=0, GCC 13.4.0-1
+# -- re-measure (--measure-fc-warm-ceiling) under the same conditions.
+DEFAULT_FC_WARM_CEILING_GFLOPS = 3.365
+
+# microbenchmark/fc_bottleneck.c, FC_VARIANT=4 FC_CACHE_MODE=1, GCC 13.4.0-1
+# -- re-measure (--measure-cold-ceiling) under the same conditions.
+DEFAULT_COLD_CEILING_GFLOPS = 1.278
 
 TICK_RE = re.compile(r"^(\S+) took (\d+) ticks")
 CRC32_RE = re.compile(r"^(Input|Output) CRC32: (0x[0-9A-Fa-f]+)")
@@ -314,6 +347,50 @@ def measure_ceiling():
     return float(f"{m.group(1)}.{m.group(2)}")
 
 
+def measure_fc_warm_ceiling():
+    microbench_dir = os.path.join(PROJECT_ROOT, "microbenchmark")
+    cmd = ["make", "run-fc-warm-ceiling"]
+    print(f"+ (cd {microbench_dir} && {' '.join(cmd)})", file=sys.stderr)
+    result = subprocess.run(
+        cmd, cwd=microbench_dir, capture_output=True, text=True, env=os.environ
+    )
+    if result.returncode != 0:
+        sys.exit(
+            "error: fc-warm-ceiling microbenchmark failed:\n"
+            f"--- stdout (tail) ---\n{result.stdout[-4000:]}\n"
+            f"--- stderr (tail) ---\n{result.stderr[-4000:]}"
+        )
+    m = CEILING_GFLOPS_RE.search(result.stdout)
+    if not m:
+        sys.exit(
+            "error: could not parse 'GFLOP/s=' from fc-warm-ceiling microbenchmark "
+            f"output:\n{result.stdout[-2000:]}"
+        )
+    return float(f"{m.group(1)}.{m.group(2)}")
+
+
+def measure_cold_ceiling():
+    microbench_dir = os.path.join(PROJECT_ROOT, "microbenchmark")
+    cmd = ["make", "run-cold-ceiling"]
+    print(f"+ (cd {microbench_dir} && {' '.join(cmd)})", file=sys.stderr)
+    result = subprocess.run(
+        cmd, cwd=microbench_dir, capture_output=True, text=True, env=os.environ
+    )
+    if result.returncode != 0:
+        sys.exit(
+            "error: cold-ceiling microbenchmark failed:\n"
+            f"--- stdout (tail) ---\n{result.stdout[-4000:]}\n"
+            f"--- stderr (tail) ---\n{result.stderr[-4000:]}"
+        )
+    m = CEILING_GFLOPS_RE.search(result.stdout)
+    if not m:
+        sys.exit(
+            "error: could not parse 'GFLOP/s=' from cold-ceiling microbenchmark "
+            f"output:\n{result.stdout[-2000:]}"
+        )
+    return float(f"{m.group(1)}.{m.group(2)}")
+
+
 # ---------------------------------------------------------------------------
 # Report.
 # ---------------------------------------------------------------------------
@@ -324,7 +401,7 @@ def row_key(row):
 
 
 def build_report(model_path, op_sequence, scalar_rows, vector_rows, ceiling_gflops,
-                  crc_scalar, crc_vector):
+                  fc_warm_ceiling_gflops, cold_ceiling_gflops, crc_scalar, crc_vector):
     lines = []
 
     def emit(s=""):
@@ -339,6 +416,15 @@ def build_report(model_path, op_sequence, scalar_rows, vector_rows, ceiling_gflo
     )
     emit(f"Empirical compute-roof ceiling: {ceiling_gflops} GFLOP/s "
          "(microbenchmark/int8dot_ceiling.c)")
+    emit(f"Empirical fc_bottleneck warm-cache ceiling: {fc_warm_ceiling_gflops} GFLOP/s "
+         "(microbenchmark/fc_bottleneck.c, FC_VARIANT=4 FC_CACHE_MODE=0 -- same op, "
+         "shape, and single-pass count as the cold-cache ceiling below, differing "
+         "only in whether operands were evicted from L1 first)")
+    emit(f"Empirical cold-cache ceiling: {cold_ceiling_gflops} GFLOP/s "
+         "(microbenchmark/fc_bottleneck.c, FC_VARIANT=4 FC_CACHE_MODE=1 -- "
+         "the achievable ceiling for this project's actual single-shot "
+         "Invoke() workload, see doc/performance_dtln.md's \"Second "
+         "correction\")")
     emit(f"Input CRC32: scalar={crc_scalar.get('Input')} vector={crc_vector.get('Input')}")
     emit(f"Output CRC32: scalar={crc_scalar.get('Output')} vector={crc_vector.get('Output')}")
     if crc_scalar.get("Output") != crc_vector.get("Output"):
@@ -369,9 +455,11 @@ def build_report(model_path, op_sequence, scalar_rows, vector_rows, ceiling_gflo
     emit("### Achieved performance vs. the roofline (gem5, cycle-accurate)\n")
     emit(
         "| op | call | variant | cycles | T (µs) | P (MFLOP/s) | efficiency vs. "
-        f"{ceiling_gflops} GFLOP/s | cycles/weight-byte |"
+        f"{ceiling_gflops} GFLOP/s (warm) | efficiency vs. {fc_warm_ceiling_gflops} "
+        f"GFLOP/s (fc warm) | efficiency vs. {cold_ceiling_gflops} "
+        "GFLOP/s (cold) | cycles/weight-byte |"
     )
-    emit("|---|---|---|---|---|---|---|---|")
+    emit("|---|---|---|---|---|---|---|---|---|---|")
 
     scalar_by_key = {row_key(r): r for r in scalar_rows}
     vector_by_key = {row_key(r): r for r in vector_rows}
@@ -388,16 +476,18 @@ def build_report(model_path, op_sequence, scalar_rows, vector_rows, ceiling_gflo
             if flops is not None:
                 p_mflops = flops / (cycles / CLOCK_HZ) / 1e6
                 efficiency = (p_mflops / 1000) / ceiling_gflops * 100
+                fc_warm_efficiency = (p_mflops / 1000) / fc_warm_ceiling_gflops * 100
+                cold_efficiency = (p_mflops / 1000) / cold_ceiling_gflops * 100
                 cyc_per_byte = cycles / weight_bytes if weight_bytes else float("nan")
                 emit(
                     f"| `{name}` | {call_idx} | {variant} | {cycles:,} | "
                     f"{t_us:.2f} | {p_mflops:.2f} | {efficiency:.2f}% | "
-                    f"{cyc_per_byte:.2f} |"
+                    f"{fc_warm_efficiency:.2f}% | {cold_efficiency:.2f}% | {cyc_per_byte:.2f} |"
                 )
             else:
                 emit(
                     f"| `{name}` | {call_idx} | {variant} | {cycles:,} | "
-                    f"{t_us:.2f} | n/a (no FLOP model for this op) | -- | -- |"
+                    f"{t_us:.2f} | n/a (no FLOP model for this op) | -- | -- | -- | -- |"
                 )
 
     return lines
@@ -413,9 +503,17 @@ def main():
     parser.add_argument("--scalar-log", help="skip running the scalar-target benchmark; read its captured stdout from this file instead")
     parser.add_argument("--vector-log", help="skip running the vector-target benchmark; read its captured stdout from this file instead")
     parser.add_argument("--ceiling", type=float, default=None,
-                         help=f"empirical compute-roof ceiling in GFLOP/s (default: hardcoded {DEFAULT_CEILING_GFLOPS}, from int8dot_ceiling.c's GCC 13.4.0-1 result)")
+                         help=f"empirical warm-cache compute-roof ceiling in GFLOP/s (default: hardcoded {DEFAULT_CEILING_GFLOPS}, from int8dot_ceiling.c's GCC 13.4.0-1 result)")
     parser.add_argument("--measure-ceiling", action="store_true",
-                         help="build and run microbenchmark/int8dot_ceiling.c to get a fresh ceiling instead of using the hardcoded default")
+                         help="build and run microbenchmark/int8dot_ceiling.c to get a fresh warm ceiling instead of using the hardcoded default")
+    parser.add_argument("--fc-warm-ceiling", type=float, default=None,
+                         help=f"empirical fc_bottleneck warm-cache ceiling in GFLOP/s (default: hardcoded {DEFAULT_FC_WARM_CEILING_GFLOPS}, from fc_bottleneck.c FC_VARIANT=4 FC_CACHE_MODE=0's GCC 13.4.0-1 result) -- same op/shape/pass-count as the cold ceiling, differing only in cache state")
+    parser.add_argument("--measure-fc-warm-ceiling", action="store_true",
+                         help="build and run microbenchmark/fc_bottleneck.c (FC_VARIANT=4 FC_CACHE_MODE=0) to get a fresh fc_bottleneck warm ceiling instead of using the hardcoded default")
+    parser.add_argument("--cold-ceiling", type=float, default=None,
+                         help=f"empirical cold-cache ceiling in GFLOP/s (default: hardcoded {DEFAULT_COLD_CEILING_GFLOPS}, from fc_bottleneck.c FC_VARIANT=4 FC_CACHE_MODE=1's GCC 13.4.0-1 result) -- the achievable ceiling for this project's actual single-shot workload, see doc/performance_dtln.md")
+    parser.add_argument("--measure-cold-ceiling", action="store_true",
+                         help="build and run microbenchmark/fc_bottleneck.c (FC_VARIANT=4 FC_CACHE_MODE=1) to get a fresh cold ceiling instead of using the hardcoded default")
     parser.add_argument("--output", default=DEFAULT_OUTPUT,
                          help=f"also write the report here (default: {DEFAULT_OUTPUT}); pass '-' to only print to stdout")
     args = parser.parse_args()
@@ -450,8 +548,23 @@ def main():
     else:
         ceiling_gflops = DEFAULT_CEILING_GFLOPS
 
+    if args.measure_fc_warm_ceiling:
+        fc_warm_ceiling_gflops = measure_fc_warm_ceiling()
+    elif args.fc_warm_ceiling is not None:
+        fc_warm_ceiling_gflops = args.fc_warm_ceiling
+    else:
+        fc_warm_ceiling_gflops = DEFAULT_FC_WARM_CEILING_GFLOPS
+
+    if args.measure_cold_ceiling:
+        cold_ceiling_gflops = measure_cold_ceiling()
+    elif args.cold_ceiling is not None:
+        cold_ceiling_gflops = args.cold_ceiling
+    else:
+        cold_ceiling_gflops = DEFAULT_COLD_CEILING_GFLOPS
+
     lines = build_report(args.model, op_sequence, scalar_rows, vector_rows,
-                          ceiling_gflops, crc_scalar, crc_vector)
+                          ceiling_gflops, fc_warm_ceiling_gflops, cold_ceiling_gflops,
+                          crc_scalar, crc_vector)
     report_text = "\n".join(lines) + "\n"
 
     print(report_text, end="")

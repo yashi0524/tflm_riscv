@@ -121,33 +121,40 @@
  * use FC_CACHE_MODE=1 (cold) -- see below.
  *
  * FC_CACHE_MODE (set via -DFC_CACHE_MODE=N at compile time, default 0):
- *   0 = WARM -- original behavior: filter/input/bias are written by the
- *       init loops immediately before timing and reused across all ITERS
- *       passes, so after the first touch they're permanently L1-resident.
- *       This is a *compute* ceiling: the best this op's instruction mix
- *       can do assuming its operands are already in cache. It is NOT
- *       representative of the real kernel's actual memory environment --
- *       see the fidelity-gap discussion above.
+ *   0 = WARM -- filter/input/bias are written by the init loops
+ *       immediately before timing, and timing covers exactly one pass
+ *       over them (FC_ITERS=1, same as COLD below) -- so they're
+ *       L1-resident from that init touch, with nothing else to evict
+ *       them before the timed pass runs. This is a *compute* ceiling:
+ *       the best this op's instruction mix can do assuming its operands
+ *       are already in cache. It is NOT representative of the real
+ *       kernel's actual memory environment -- see the fidelity-gap
+ *       discussion above.
  *   1 = COLD -- touches a 256 KiB `volatile` distractor buffer (4x this
  *       target's real 64 KiB L1) immediately after the init loops but
  *       before timing starts, evicting filter/input/bias back out, then
- *       runs exactly one timed pass (ITERS is forced to 1 -- re-evicting
- *       between repeated passes just to average them isn't worth gem5's
- *       simulation cost, and a "ceiling" is a reference bound, not a
- *       statistic that needs averaging). This reproduces the real
- *       kernel's actual condition: every weight byte read exactly once,
- *       never previously cached (confirmed to land within 2% of the real
- *       kernel's directly-instrumented cycles/channel -- see "Realistic
- *       FULLY_CONNECTED bottleneck decomposition" in gem5_integration.md).
- *       This is the *memory-latency* ceiling: the best this op can do
- *       given its actual, unavoidable per-invocation cache-miss pattern.
+ *       runs the same single timed pass (FC_ITERS=1) as WARM. This
+ *       reproduces the real kernel's actual condition: every weight byte
+ *       read exactly once, never previously cached (confirmed to land
+ *       within 2% of the real kernel's directly-instrumented
+ *       cycles/channel -- see "Realistic FULLY_CONNECTED bottleneck
+ *       decomposition" in gem5_integration.md). This is the
+ *       *memory-latency* ceiling: the best this op can do given its
+ *       actual, unavoidable per-invocation cache-miss pattern.
+ * FC_ITERS is fixed at 1 for both modes -- originally WARM ran 20
+ * reps (reusing the same resident array) while COLD was forced to 1,
+ * which meant the two ceilings differed in iteration count as well as
+ * cache state. Pinning both to a single timed pass isolates cache state
+ * as the only variable between them (the array is already warm from the
+ * init-loop touch by the first pass either way, so this doesn't change
+ * WARM's measured cycles -- it just removes the confound).
  * Build both: `make run-fc-bottleneck` (warm) and
  * `make run-fc-bottleneck-cold` (cold) -- see ./Makefile.
  */
 
 #define N_CHANNELS 257
 #define K_DEPTH 128
-#define ITERS 20
+#define FC_ITERS 1
 
 #ifndef FC_VARIANT
 #define FC_VARIANT 0
@@ -158,14 +165,11 @@
 #endif
 
 #if FC_CACHE_MODE == 1
-#define FC_ITERS 1
 /* 256 KiB: 4x this target's real 64 KiB L1 (sim_config/
  * gem5_riscv_baremetal_fs.py) -- confirmed sufficient to fully evict
  * filter/input/bias (see gem5_integration.md). `volatile` so GCC can't
  * prove the writes are dead and elide the whole loop. */
 static volatile int8_t g_evict_buf[262144];
-#else
-#define FC_ITERS ITERS
 #endif
 
 static uint32_t rng_state = 12345u;
