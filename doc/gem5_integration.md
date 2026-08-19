@@ -1345,16 +1345,56 @@ it happens to equal 0 for this model. Marking the quantization params
 `volatile` (forcing genuine runtime reads GCC can't constant-propagate)
 restored the correct 3-reduction instruction sequence (confirmed via
 disassembly) and closed part of the gap (19,510 -> 25,492 cycles), but a
-real gap to the true kernel remained even so — most likely register
-pressure and instruction scheduling differences from the much larger
-surrounding function (many more live locals: `filter_shape`,
-`output_shape`, the whole `FullyConnectedParams` struct, etc.) that a
-small, tight standalone loop structurally can't reproduce. Not fully
-resolved — kept in the microbenchmark directory as a real, working tool
-with this fidelity gap clearly documented in its own header comment,
-since it's still directionally useful and much faster to iterate on than
-rebuilding the whole benchmark, but its *absolute* cycle counts should
-not be trusted without cross-checking against direct instrumentation.
+real gap to the true kernel remained even so.
+
+**A follow-up register-spill theory was raised and then disproven by a
+fresh disassembly recheck (2026-08-19).** The working theory at the time
+was that the real kernel's per-channel loop spills scalar constants
+(`output_multiplier`, `output_shift`, `activation_min`/`max`, `zero32`)
+to the stack and reloads them every iteration, based on a diff against
+`fc_bottleneck.c`'s `FC_VARIANT=0` disassembly. That theory does not
+hold up: a clean rebuild of both binaries (forced recompile, same GCC
+13.4.0-1, same `-O2`, verified via object timestamps) followed by a
+fresh disassembly of the real `FullyConnected<int8,int8,int8,int32>`
+instantiation shows **zero** `csrr vlenb` instructions anywhere in the
+object file, and the per-channel loop body holds `output_multiplier`,
+the precomputed `round` constant, `output_shift`, and
+`activation_max` in registers (`s7`, `s5`, `s4`, `s1`) across the entire
+loop — hoisted once, never reloaded. `zero32` is materialized once
+(`vmv.v.i v8,0`) outside every loop. The whole per-channel body contains
+exactly one conditional stack load, on the cold clamp-to-min path.
+
+The reload pattern that prompted the original theory turned out to
+belong to `fc_bottleneck.c` itself, not the real kernel: every
+quantization scalar in that microbenchmark (`output_multiplier`,
+`output_shift`, `activation_min`/`max`, `output_offset`,
+`input_offset`, `filter_offset`) is deliberately declared `volatile`
+(see its header comment above) specifically to stop GCC from
+constant-folding them away — a legitimate technique for keeping the dot
+product honest, but one that also forces the requantize stage to reload
+from memory every channel as a side effect. That's what the earlier
+disassembly diff was actually seeing. The comparison that produced the
+original claim mixed up which binary the reload pattern came from.
+
+The inner *vector* instruction sequence genuinely is the same between
+the two (same opcodes, same shape) — that part of the original
+observation was correct, and it's still true the vector work itself
+isn't the gap. But there is no register-pressure/spill bug left to fix
+in the real kernel's `FullyConnected()`: after the
+`MultiplyByQuantizedMultiplier` inlining fix (see "Applied: inlining
+`MultiplyByQuantizedMultiplier`" below), its scalar quantization
+constants already have clean register allocation. `fc_bottleneck.c`'s
+standalone `FULL` pipeline still measures faster (2.581 GFLOP/s vs. the
+real kernel's 1.203 GFLOP/s at this shape) — that gap is real and still
+unexplained, but it is not caused by register spilling in the real
+kernel, and no further lever has been identified here.
+
+`fc_bottleneck.c` itself is kept in the microbenchmark directory as a
+real, working tool with this fidelity gap clearly documented in its own
+header comment, since it's still directionally useful and much faster to
+iterate on than rebuilding the whole benchmark, but its *absolute* cycle
+counts should not be trusted without cross-checking against direct
+instrumentation.
 
 **What actually resolved it: instrumenting the real kernel directly**,
 the same technique used to root-cause the original offset-truncation bug
@@ -1665,6 +1705,17 @@ broken.
 
 ## Known limitations / follow-ups not yet done
 
+- A previously-suspected register-spill bug in the real `FullyConnected()`'s
+  per-channel loop was investigated and ruled out (2026-08-19 recheck) — see
+  "Realistic FULLY_CONNECTED bottleneck decomposition" above. Fresh
+  disassembly of a clean rebuild shows the quantization scalars already
+  have clean register allocation post-inlining-fix; the reload pattern
+  that suggested otherwise turned out to belong to
+  `microbenchmark/fc_bottleneck.c`'s own deliberate `volatile` qualifiers,
+  not the real kernel. The 2.581 vs. 1.203 GFLOP/s gap between that
+  microbenchmark and the real kernel is still real and still unexplained,
+  but not for the reason previously documented here — no register-pressure
+  fix is warranted, and no replacement lever has been identified.
 - `keyword_benchmark` and `person_detection_benchmark` (the two dedicated
   benchmark binaries under `tensorflow/lite/micro/benchmarks/`, as opposed
   to the generic `tflm_benchmark`) haven't been tried on `riscv{32,64}_generic`
