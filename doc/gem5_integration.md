@@ -1473,25 +1473,42 @@ represents. Refreshed all 10 numbers below accordingly — `DOT_ONLY`
 moved from 74 to 76 cyc/ch (3.450 → 3.365 GFLOP/s), a ~2.7% shift; COLD
 numbers are unchanged since COLD was already single-pass.
 
+**Follow-up (2026-08-20): fixed the same requantize rounding bug here as
+in the real kernel** (see the correctness-bug entry in "Known
+limitations" below — `fc_bottleneck.c`'s own `MultiplyByQuantizedMultiplier`
+copy had the identical hardcoded-single-rounding bug, independently, and
+was still out of sync with the just-fixed real kernel until this).
+`DOT_ONLY` is unaffected (it skips requantize entirely — `FC_VARIANT=4`
+never calls this function) and so is `NO_REQUANT` (skips it by
+definition) — both columns' `DOT_ONLY`/`NO_REQUANT` rows below are
+unchanged from the table above. `FULL`/`NO_BIAS`/`NO_CLAMP` all got
+slower (the corrected double-rounding path has one more conditional):
+
 | Variant | Warm cyc/ch | Warm GFLOP/s | Cold cyc/ch | Cold GFLOP/s | Cold/warm |
 |---|---|---|---|---|---|
-| `FULL` (0) | 115 | 2.211 | 237 | 1.077 | 2.06x |
-| `NO_BIAS` (1) | 110 | 2.309 | 234 | 1.093 | 2.13x |
+| `FULL` (0) | 131 | 1.946 | 256 | 0.999 | 1.95x |
+| `NO_BIAS` (1) | 123 | 2.068 | 254 | 1.005 | 2.07x |
 | `NO_REQUANT` (2) | 92 | 2.767 | 224 | 1.138 | 2.43x |
-| `NO_CLAMP` (3) | 91 | 2.799 | 216 | 1.180 | 2.37x |
+| `NO_CLAMP` (3) | 115 | 2.208 | 243 | 1.050 | 2.11x |
 | `DOT_ONLY` (4) | 76 | 3.365 | 200 | 1.278 | 2.63x |
 
-Every variant slows 2.1-2.6x cold vs. warm, consistent with the dot
-product (memory-bound either way) dominating all of them. The cold
-`FULL` ceiling (237 cyc/ch, 1.077 GFLOP/s) now lands close to the real
-kernel's directly-instrumented total (213.5 cyc/ch, 1.203 GFLOP/s,
-`54,858/257`) — real kernel actually *beats* this cold ceiling slightly,
-because `fc_bottleneck.c`'s `volatile`-forced requantize still recomputes
-`round` from scratch every channel (see the fidelity-gap note above),
-while the real kernel hoists it once. That's the expected direction for
-a microbenchmark built with deliberately pessimistic anti-optimization
-tricks: not a strict upper bound, but now a *realistic* reference instead
-of the warm ceiling's near-3x-too-optimistic one.
+Every variant still slows ~2-2.6x cold vs. warm, same conclusion as
+before (dot product, memory-bound either way, dominates all of them).
+The cold `FULL` ceiling moved to 256 cyc/ch (0.999 GFLOP/s) — compare
+against the real kernel's current directly-instrumented total, which
+itself moved from 213.5 to ~177.7 cyc/ch (`45,658/257`, 1.44097 GFLOP/s,
+post rounding-fix — see "Achieved performance vs. the roofline" in
+`dtln/performance_dtln.md`) after the same fix made the real kernel
+*faster* on this metric even though it now does the algorithmically
+*correct* thing — counterintuitive, but consistent with the real kernel
+also gaining the extra conditional and the ⚠ >100%-cold-ceiling anomaly
+documented in "Known limitations" below (still open, still unexplained,
+and this is more evidence for it, not against it). The qualitative
+"real kernel beats or nearly matches the cold `FULL` ceiling, because
+`fc_bottleneck.c`'s `volatile`-forced requantize recomputes `round` from
+scratch every channel (see the fidelity-gap note above) while the real
+kernel hoists it once" conclusion still holds — the real kernel beats
+this new cold `FULL` ceiling by an even wider margin than before.
 
 `DOT_ONLY`'s warm figure (3.365 GFLOP/s) is also tracked as the roofline
 report/SVG's third ceiling line (`script/4_roofline_report.py

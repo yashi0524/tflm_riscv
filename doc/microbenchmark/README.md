@@ -120,17 +120,23 @@ GCC 13.4.0-1, current as of 2026-08-20:
 | `fc_bottleneck.c` | `DOT_ONLY`, `FC_CACHE_MODE=1` | 200 | **1.278** | Cold ceiling (the one that applies to a real single-shot `Invoke()`) |
 
 `fc_bottleneck.c`'s full 5-variant warm-vs-cold comparison, same shape
-(`FC_ITERS=1` both modes):
+(`FC_ITERS=1` both modes). Numbers below are post the 2026-08-20
+requantize-rounding fix (see "Correctness regression probes" below) —
+`DOT_ONLY` and `NO_REQUANT` are unaffected (neither calls
+`MultiplyByQuantizedMultiplier` at all), `FULL`/`NO_BIAS`/`NO_CLAMP` all
+got slightly slower (the corrected double-rounding path has one more
+conditional than the previously-hardcoded, and wrong, single-rounding
+path):
 
 | Variant | Warm cyc/ch | Warm GFLOP/s | Cold cyc/ch | Cold GFLOP/s | Cold/warm |
 |---|---|---|---|---|---|
-| `FULL` (0) | 115 | 2.211 | 237 | 1.077 | 2.06x |
-| `NO_BIAS` (1) | 110 | 2.309 | 234 | 1.093 | 2.13x |
+| `FULL` (0) | 131 | 1.946 | 256 | 0.999 | 1.95x |
+| `NO_BIAS` (1) | 123 | 2.068 | 254 | 1.005 | 2.07x |
 | `NO_REQUANT` (2) | 92 | 2.767 | 224 | 1.138 | 2.43x |
-| `NO_CLAMP` (3) | 91 | 2.799 | 216 | 1.180 | 2.37x |
+| `NO_CLAMP` (3) | 115 | 2.208 | 243 | 1.050 | 2.11x |
 | `DOT_ONLY` (4) | 76 | 3.365 | 200 | 1.278 | 2.63x |
 
-Every variant slows 2.1-2.6x cold vs. warm — consistent with the dot
+Every variant slows ~2-2.6x cold vs. warm — consistent with the dot
 product (memory-bound either way) dominating all of them. See "Realistic
 `FULLY_CONNECTED` bottleneck decomposition" in
 [`../gem5_integration.md`](../gem5_integration.md) for the full derivation
@@ -171,3 +177,14 @@ vectorized-output CRC32 mismatch, see
   hardcoding one branch — this probe (and the mismatch counts above) is
   kept as-is, describing the pre-fix bug, as a permanent regression test
   against reintroducing it.
+- **`fc_bottleneck.c` had the identical bug independently, in its own
+  copy of `MultiplyByQuantizedMultiplier`** (not this probe — the probe
+  only tested the real kernel's copy) — same hardcoded single-rounding,
+  never checked against fixing the real kernel first, so it went out of
+  sync in the opposite direction until also fixed 2026-08-20 (same
+  `#if`/`#else` structure, reimplemented from gemmlowp's scalar
+  specializations since this file builds as plain C with no TFLM include
+  path — can't `#include` the real, C++-template, `fixedpoint.h`). Only
+  affects the `FULL`/`NO_BIAS`/`NO_CLAMP` variants below (`DOT_ONLY` and
+  `NO_REQUANT` never call this function at all) — the three ceilings
+  above were never affected either way.

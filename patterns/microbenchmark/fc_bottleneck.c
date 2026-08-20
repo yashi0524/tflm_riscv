@@ -228,7 +228,25 @@ static inline int32_t Int8DotProductRvv(const int8_t* input,
 
 /* Copy of the int32_t overload from
  * tensorflow/lite/kernels/internal/common.cc, used by FullyConnected()'s
- * int32-accumulator requantization path. */
+ * int32-accumulator requantization path. common.cc actually selects
+ * between two different algorithms via #if TFLITE_SINGLE_ROUNDING, and
+ * this project's build never defines that macro -- so the real kernel
+ * (and this copy, to match) uses double-rounding (gemmlowp
+ * SaturatingRoundingDoublingHighMul + RoundingDivideByPOT), not the
+ * simpler single-rounding shift-based formula. Confirmed
+ * 2026-08-20: this file originally hardcoded single-rounding
+ * unconditionally, silently out of sync with the real (double-rounding)
+ * scalar path -- same bug independently found and fixed in
+ * fully_connected.h's MultiplyByQuantizedMultiplierInlined via
+ * ../../doc/anomaly_detection/performance_anomaly_detection.md's
+ * root-cause investigation. Reimplemented here from gemmlowp/fixedpoint/
+ * fixedpoint.h's actual int32_t scalar specializations (can't just
+ * #include the real gemmlowp header: this file builds as plain C against
+ * no TFLM include path at all -- see this file's own top-of-file
+ * comment -- and gemmlowp's fixedpoint.h is a C++ template header) --
+ * this is the same reimplementation already cross-validated in
+ * requant_correctness_probe.c. */
+#if TFLITE_SINGLE_ROUNDING
 static inline int32_t MultiplyByQuantizedMultiplier(int32_t x,
                                                      int32_t quantized_multiplier,
                                                      int shift) {
@@ -238,6 +256,34 @@ static inline int32_t MultiplyByQuantizedMultiplier(int32_t x,
   result = result >> total_shift;
   return (int32_t)result;
 }
+#else   /* !TFLITE_SINGLE_ROUNDING (the default, and what this project's
+         * build actually uses) */
+static inline int32_t SaturatingRoundingDoublingHighMul_(int32_t a, int32_t b) {
+  int overflow = (a == b) && (a == INT32_MIN);
+  int64_t ab_64 = (int64_t)a * (int64_t)b;
+  int32_t nudge = (ab_64 >= 0) ? (1 << 30) : (1 - (1 << 30));
+  int32_t ab_x2_high32 = (int32_t)((ab_64 + nudge) / (1LL << 31));
+  return overflow ? INT32_MAX : ab_x2_high32;
+}
+
+static inline int32_t RoundingDivideByPOT_(int32_t x, int exponent) {
+  if (exponent == 0) return x;
+  int32_t mask = (1 << exponent) - 1;
+  int32_t remainder = x & mask;
+  int32_t threshold = (mask >> 1) + ((x < 0) ? 1 : 0);
+  return (x >> exponent) + ((remainder > threshold) ? 1 : 0);
+}
+
+static inline int32_t MultiplyByQuantizedMultiplier(int32_t x,
+                                                     int32_t quantized_multiplier,
+                                                     int shift) {
+  int left_shift = shift > 0 ? shift : 0;
+  int right_shift = shift > 0 ? 0 : -shift;
+  return RoundingDivideByPOT_(
+      SaturatingRoundingDoublingHighMul_(x * (1 << left_shift), quantized_multiplier),
+      right_shift);
+}
+#endif  /* TFLITE_SINGLE_ROUNDING */
 
 int main(void) {
   static int8_t input[K_DEPTH];
