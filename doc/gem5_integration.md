@@ -1912,24 +1912,44 @@ broken.
      consistent with that class of cause, not a simulation or measurement
      artifact).
 
-  **Follow-up (2026-08-20, same day): narrower and more reassuring than
-  "any rebuild might drift."** Ran 3 more independent `rm -rf <gen
-  tree> && rebuild` cycles from the *current, untouched, git-committed*
-  source tree (no edits, no `git checkout` in between) — **all 3 came
-  back bit-identical**: 58,958/437,137/313,777/86,405 ticks, every time,
-  zero variance. So plain repeated rebuilding of a stable, already-checked-
-  out tree is fully deterministic — the drift documented above (45,658 →
-  58,958) wasn't triggered by rebuilding per se, it was triggered
-  specifically by the `git checkout --`-based revert in between (which
-  recreates the file's on-disk content with a new inode/mtime, even
-  though the bytes are identical to before). That points more precisely
-  at file-recreation/timestamp churn — likely feeding into object-file
-  enumeration or link order somewhere in this Makefile-based build system
-  — as the actual trigger, not "every build is a fresh coin flip." A
-  source tree that's checked out once and rebuilt repeatedly (the normal
-  development workflow) should give a stable, trustworthy number; the
-  risk is specifically around edit-then-revert / checkout / stash-style
-  operations that recreate file content without changing it.
+  **Follow-up (2026-08-20, same day): far more robust than "any rebuild
+  might drift" — and the specific trigger theorized below was directly
+  tested and disproven.** Ran 3 more independent `rm -rf <gen tree> &&
+  rebuild` cycles from the *current, untouched, git-committed* source
+  tree (no edits in between) — **all 3 came back bit-identical**:
+  58,958/437,137/313,777/86,405 ticks, every time, zero variance. So
+  plain repeated rebuilding of a stable, already-checked-out tree is
+  fully deterministic.
+
+  Initial theory: the drift was triggered by `git checkout --`-based file
+  recreation (new inode/mtime, same bytes) between the 45,658 and 58,958
+  builds, feeding into object-file enumeration/link order. **Tested this
+  directly and it does not hold**: edited `fully_connected.h` with a
+  trivial, content-neutral change via a normal edit (confirmed to
+  recreate the file's inode, same as `git checkout` would), then edited
+  it back (`git diff` confirms byte-identical to before, inode changed
+  *twice*) — a full clean rebuild afterward still gave **58,958**, no
+  drift. Also ruled out: stale build state living outside the
+  vector-target gen directory (a full `rm -rf gen` wiping *both*
+  scalar and vector build trees entirely, not just the one this
+  investigation had been narrowly cleaning, still gave 58,958), and
+  `ccache` (not installed, no `ccache` env vars, `riscv-none-elf-gcc` is
+  a real binary not a cache wrapper — so nothing persists across a `gen/`
+  wipe from outside the project tree either).
+
+  **Where this leaves it**: 58,958 is now confirmed reproducible across 5
+  independent tests, including the two most likely disruption vectors
+  (file recreation, stale caches) — call this the value for the current
+  source tree with real confidence. The original 45,658 measurement's
+  exact trigger remains **not identified** — every specific mechanism
+  tested for reproducing it failed to, and the intermediate build states
+  that led to it (several rebuilds with actually-different, larger
+  `fully_connected.h` content during the instrumentation experiments
+  described below) are not preserved anywhere to re-test directly. Not
+  chased further; flagged in the TODO below for anyone who wants to
+  bisect it properly (e.g. by re-deriving the exact original edit
+  sequence step by step, which this investigation didn't keep a
+  byte-for-byte record of).
 
   **Confirmed to actually resolve the anomaly, not just explain drift**:
   regenerated the full roofline report on the 58,958-cycle build —
@@ -1969,21 +1989,24 @@ broken.
       printing everything in one burst *after* the loop fixed this.
   **Practical takeaway for reading any of this project's absolute cycle
   counts or ceiling-relative percentages going forward**: a number
-  measured on a stable, already-checked-out source tree and reproduced by
-  plain rebuilding *is* trustworthy — 3/3 identical reruns support that.
-  The caveat is narrower than "any rebuild is unreliable": specifically
-  distrust a cycle count if it was measured right after an edit-then-
-  revert, `git checkout`, branch switch, or stash pop touched
-  `fully_connected.h` (or likely any file feeding this build's object
-  enumeration) — re-measure after such an operation rather than trusting
-  a carried-over number. The actual range observed across this
-  investigation (mid-40s to high-50s thousands of cycles for `dtln`'s
-  `FULLY_CONNECTED`, i.e. cold-ceiling efficiency from the high-80s to
-  over 110%) still stands as what's *possible* across different binary
-  layouts, but isn't evidence that the number silently drifts on its own
-  between ordinary rebuilds. The qualitative conclusions (vectorization
-  wins big, cold-cache is the ceiling that matters, requantize rounding
-  needed the earlier fix) are unaffected either way.
+  measured on this source tree and reproduced by rebuilding *is*
+  trustworthy — 5/5 identical reruns support that, surviving every
+  disruption this investigation specifically tried (file recreation,
+  full `gen/` wipe). There is no known, reproducible trigger for
+  drift — file-recreation-via-edit was the leading theory and it's now
+  disproven by direct test, not just unconfirmed. The actual range
+  observed across this investigation (mid-40s to high-50s thousands of
+  cycles for `dtln`'s `FULLY_CONNECTED`, i.e. cold-ceiling efficiency
+  from the high-80s to over 110%) still stands as what's *possible*
+  across different binary layouts — the 45,658-cycle build was real, not
+  a measurement error — but with no known way to reproduce or predict
+  when it recurs, the practical guidance is simply: trust whatever the
+  current build measures, and if a number looks surprising (like exceeding
+  100% of an isolated-probe ceiling), that alone is grounds to re-measure
+  before concluding it's a stable fact, not a specific pre-condition to
+  watch for. The qualitative conclusions (vectorization wins big,
+  cold-cache is the ceiling that matters, requantize rounding needed the
+  earlier fix) are unaffected either way.
 - A previously-suspected register-spill bug in the real `FullyConnected()`'s
   per-channel loop was investigated and ruled out, and the 2.581 vs. 1.203
   GFLOP/s gap against `microbenchmark/fc_bottleneck.c` that motivated it

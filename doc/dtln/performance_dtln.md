@@ -355,24 +355,25 @@ the same roofline analysis for `anomaly_detection_int8.tflite`). Output
 CRC32 is unchanged (`0x7E578D1C` — this kernel's specific values never
 happened to land on this bug's rounding-boundary cases).
 
-**The table below is confirmed stable, not a one-off snapshot** — 4
+**The table below is confirmed stable, not a one-off snapshot** — 5
 independent `rm -rf <gen tree> && rebuild` cycles of this exact source
-tree reproduced it bit-identically each time (58,958/437,137/313,777/
-86,405 ticks, every run). It's included here specifically *because* an
-earlier, differently-produced build of the same byte-identical source
-showed `FULLY_CONNECTED` exceeding 100% of the cold ceiling instead
-(112.75%, a seemingly-impossible result — the real kernel does strictly
-more work than the isolated dot-product-only ceiling probe) — that
-turned out to be real, not a measurement bug, but tied specifically to a
-`git checkout`-based file revert in between the two builds (which
-recreates file content with a new inode/mtime even though the bytes
-match), not to routine rebuilding. See "RESOLVED" in
-[`../gem5_integration.md`](../gem5_integration.md)'s "Known limitations"
-for the full investigation and exactly what is and isn't safe to trust
-going forward. Bottom line for this table: trust it as-is; re-measure
-specifically after any edit/checkout/stash operation touches
-`fully_connected.h`, don't assume a carried-over number from before such
-an operation still holds.
+tree reproduced it bit-identically every time (58,958/437,137/313,777/
+86,405 ticks), including after a full `gen/` wipe of both build targets
+and after directly testing (and disproving) whether merely recreating
+`fully_connected.h`'s inode via an edit-then-revert triggers drift — it
+doesn't. It's included here specifically *because* an earlier,
+differently-produced build of the same byte-identical source showed
+`FULLY_CONNECTED` exceeding 100% of the cold ceiling instead (112.75%, a
+seemingly-impossible result — the real kernel does strictly more work
+than the isolated dot-product-only ceiling probe) — that was a real
+measurement, not a bug, but its exact trigger is not identified (the
+leading theory, file-recreation, was directly tested and ruled out). See
+"RESOLVED" in [`../gem5_integration.md`](../gem5_integration.md)'s
+"Known limitations" for the full investigation. Bottom line for this
+table: trust it — no known operation has been shown to invalidate it —
+but if a future measurement looks surprising (e.g. crosses 100% of an
+isolated-probe ceiling again), that alone is grounds to re-measure rather
+than assume it's a stable fact.
 
 | | Cycles | T (µs) | P (MFLOP/s) | Eff. vs. 3.723 GFLOP/s (warm) | Eff. vs. 3.365 GFLOP/s (fc warm) | **Eff. vs. 1.278 GFLOP/s (cold)** | Cycles/weight-byte |
 |---|---|---|---|---|---|---|---|
@@ -415,13 +416,12 @@ against the dot-only ceiling (and **103.6%** against the full-pipeline
 one — a smaller, correctness-explicable gap: `fc_bottleneck.c`'s
 deliberately-`volatile` requantize still recomputes `round` from scratch
 every channel while the real kernel hoists it once, see the fidelity-gap
-note above). These percentages are confirmed stable — 4/4 identical
+note above). These percentages are confirmed stable — 5/5 identical
 rebuilds, see the table intro above — but a *differently-produced* build
-of the same source (specifically: one measured right after an
-edit/checkout touched `fully_connected.h`) has been observed to push the
-dot-only-ceiling figure above 100% instead; see "RESOLVED" in
-[`../gem5_integration.md`](../gem5_integration.md)'s "Known limitations"
-for exactly when that risk applies. A third ceiling, `fc_bottleneck.c`'s own
+of the same source has been observed once to push the dot-only-ceiling
+figure above 100% instead, by a trigger that was searched for and not
+found (see "RESOLVED" in [`../gem5_integration.md`](../gem5_integration.md)'s
+"Known limitations" for the full investigation). A third ceiling, `fc_bottleneck.c`'s own
 DOT_ONLY *warm*-cache result (**3.365 GFLOP/s**, `FC_CACHE_MODE=0`), is
 tracked alongside it in the table above as a same-harness cross-check —
 same op, shape, and single-pass count as the cold ceiling, differing
@@ -439,14 +439,13 @@ cost) but unverified; a LSTM-shaped cold probe hasn't been built.
 wrong `25.6 GFLOP/s` framing) or even "~3× short" (the first correction's
 `3.723 GFLOP/s` framing) — for `FULLY_CONNECTED`, it's already at what
 this specific single-shot invocation can genuinely achieve (87.32% of
-the cold-cache ceiling, confirmed stable across 4 independent rebuilds —
+the cold-cache ceiling, confirmed stable across 5 independent rebuilds —
 see "RESOLVED" in `gem5_integration.md`'s "Known limitations" for one
-important caveat: this figure has been observed to shift past 100%
-instead specifically right after an edit/`git checkout` touches
-`fully_connected.h`, a file-recreation-triggered machine-code
-non-determinism, not a per-build regression or a real ceiling-beating
-result — re-measure after such an operation rather than trusting a
-carried-over number).** Both earlier framings were honest measurements against the wrong
+important caveat: this figure has, once, been observed to sit past 100%
+instead on a differently-produced build of the same source — real
+machine-code non-determinism, not a per-build regression or a genuine
+ceiling-beating result, but with no confirmed trigger despite direct
+testing of the leading theory).** Both earlier framings were honest measurements against the wrong
 denominator: the idealized ceiling ignored `MinorCPU`'s FU count/issue
 width entirely, and the measured-but-warm ceiling ignored that this
 workload's weights are never cached before they're read. Neither error

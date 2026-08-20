@@ -176,27 +176,26 @@ the log instead of hardcoding "dtln" (they'd been dtln-only until now).
 ⚠ = above 100% of the cold-cache ceiling — **not** explained by the
 requantize rounding bug above (that was a computed-*value* bug, and is
 now fixed; this is a cycle-*count* phenomenon). **Update: this turned
-out to be machine-code non-determinism triggered by file-recreation
-(edit/`git checkout`), not a stable per-layer property, and not random
-between ordinary rebuilds** — see "RESOLVED" in
+out to be real machine-code non-determinism between builds of identical
+source, not a stable per-layer property** — see "RESOLVED" in
 `../gem5_integration.md`'s "Known limitations" for the full investigation
-(done via `dtln`, including 4 independent plain-rebuild confirmations
-showing zero drift; confirmed here too). Direct evidence in this very
-table: the build measured *right after* an edit-then-revert touched
-`fully_connected.h` (fixing the rounding bug, then separately adding and
-reverting temporary instrumentation) shows calls 1 and 9 exceeding 100%
-(142%, 111%); an *earlier* build of the same byte-identical source,
-measured before that file-recreation event, had calls 1, 4, and 8
-exceeding instead (102%, 109%, 111%). Which layers land above 100% can
-shift specifically around such an operation; it was never about
-`calls 1/4/8` (or `1/9`) being special shapes. Full table (all three
-ceiling columns) in [`roofline_log.txt`](roofline_log.txt).
+(done via `dtln`, including 5 independent plain-rebuild confirmations
+showing zero drift, plus directly testing and ruling out file-recreation
+as the trigger; confirmed to occur here too, exact cause not identified).
+Direct evidence in this very table: the build measured for this table
+shows calls 1 and 9 exceeding 100% (142%, 111%); an *earlier* build of
+the same byte-identical source had calls 1, 4, and 8 exceeding instead
+(102%, 109%, 111%). Which layers land above 100% can shift between
+builds; it was never about `calls 1/4/8` (or `1/9`) being special
+shapes. Full table (all three ceiling columns) in
+[`roofline_log.txt`](roofline_log.txt).
 
 **All numbers in this table are trustworthy as correctness** (verified
 via matching output CRC32) **and this specific build's cycle counts are
-themselves stable** (see the ⚠ note above for the narrow condition under
-which they aren't — re-measure after an edit/checkout touches
-`fully_connected.h`, don't assume a carried-over number). Scalar:
+themselves confirmed stable** (see the ⚠ note above and
+`../gem5_integration.md` — no known operation has been shown to
+invalidate a measurement; re-measure if a future number looks
+surprising, e.g. exceeds 100% again). Scalar:
 14.6-15.4% efficiency for the `K∈{128,640}` layers, matching `dtln`'s
 scalar `FULLY_CONNECTED` closely — 7.6%/13.4% for the small `N=8`/`K=8` layers,
 lower because fixed per-call overhead dominates at that size. Vectorized:

@@ -127,21 +127,28 @@ happened to never hit this.
       reuses `dtln`'s `K=128,N=257`-calibrated ceilings as an
       approximation. See "Ceiling shape mismatch" in
       `performance_anomaly_detection.md`.
-- [ ] **Pin down the exact mechanism behind the file-recreation-triggered
-      machine-code non-determinism found while investigating the
-      >100%-cold-ceiling anomaly** (see "RESOLVED" in
-      `../gem5_integration.md`'s "Known limitations") — narrower than
-      first thought: 4 independent plain `rm -rf <gen tree> && rebuild`
-      cycles of an untouched, checked-out source tree all reproduced
-      bit-identically (zero drift), so it's not "every rebuild is a coin
-      flip." The drift observed was specifically triggered by a `git
-      checkout --`-based revert of a `fully_connected.h` edit in between
-      two builds (recreates file content/inode/mtime without changing
-      bytes). Leading guess: object-file link order/enumeration somewhere
-      in this Makefile-based build system is sensitive to that kind of
-      file-recreation, affecting final code/data layout — not isolated
-      further. Worth doing if this project wants either (a) a build
-      procedure guaranteed immune to this (e.g. confirming whether a
-      full `git clean` + fresh checkout is more robust than edit/revert
-      cycles), or (b) to actually fix the underlying Makefile
-      non-determinism (e.g. sorting whatever enumerates object files).
+- [ ] **Pin down the exact mechanism behind the machine-code
+      non-determinism found while investigating the >100%-cold-ceiling
+      anomaly** (see "RESOLVED" in `../gem5_integration.md`'s "Known
+      limitations") — genuinely unresolved, not just unconfirmed: the
+      current build state (58,958 cycles for `dtln`'s vectorized
+      `FULLY_CONNECTED`) is confirmed reproducible across 5 independent
+      tests, including the two most likely disruption vectors tried and
+      ruled out (file-recreation via edit-then-revert — directly
+      tested, does *not* trigger drift; stale build state outside the
+      vector-target gen dir — a full `rm -rf gen` wipe of both build
+      targets still gave the same result; `ccache` also ruled out,
+      not installed). The earlier 45,658-cycle build was real (not a
+      measurement error) but its trigger is now unreproducible by any
+      method tried, and the exact sequence of edits that originally
+      produced it wasn't preserved for a proper bisection. Leading guess
+      still: object-file link order/enumeration somewhere in this
+      Makefile-based build system, sensitive to *something* not yet
+      isolated. Worth doing if this project wants a build procedure with
+      a positive guarantee of reproducibility (right now it's "confirmed
+      stable in every test conducted," not "provably always stable") —
+      would need either a proper bisection re-deriving the original
+      trigger sequence step by step, or fixing suspected non-determinism
+      sources in the Makefile directly (e.g. sorting any `$(wildcard
+      ...)`-based file enumeration) regardless of whether they're
+      confirmed as the actual cause.
