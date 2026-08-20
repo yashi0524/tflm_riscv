@@ -152,48 +152,57 @@ the log instead of hardcoding "dtln" (they'd been dtln-only until now).
 
 | call | K,N shape | variant | cycles | P (MFLOP/s) | eff. vs. cold (1.278 GFLOP/s) |
 |---|---|---|---|---|---|
-| 1 | K=640,N=128 | scalar | 833,929 | 196.47 | 15.37% |
-| 1 | K=640,N=128 | vectorized | 125,153 | 1309.12 | **102.43%** ⚠ |
-| 2 | K=128,N=128 | scalar | 173,027 | 189.38 | 14.82% |
-| 2 | K=128,N=128 | vectorized | 31,186 | 1050.73 | 82.22% |
-| 3 | K=128,N=128 | scalar | 174,974 | 187.27 | 14.65% |
-| 3 | K=128,N=128 | vectorized | 29,640 | 1105.53 | 86.50% |
-| 4 | K=128,N=128 | scalar | 175,397 | 186.82 | 14.62% |
-| 4 | K=128,N=128 | vectorized | 23,429 | 1398.61 | **109.44%** ⚠ |
-| 5 | K=128,N=8 | scalar | 12,187 | 168.05 | 13.15% |
-| 5 | K=128,N=8 | vectorized | 2,936 | 697.55 | 54.58% |
-| 6 | K=8,N=128 | scalar | 21,007 | 97.49 | 7.63% |
-| 6 | K=8,N=128 | vectorized | 13,239 | 154.69 | 12.10% |
-| 7 | K=128,N=128 | scalar | 174,596 | 187.68 | 14.69% |
-| 7 | K=128,N=128 | vectorized | 29,950 | 1094.09 | 85.61% |
-| 8 | K=128,N=128 | scalar | 174,340 | 187.95 | 14.71% |
-| 8 | K=128,N=128 | vectorized | 23,157 | 1415.04 | **110.72%** ⚠ |
-| 9 | K=128,N=128 | scalar | 174,732 | 187.53 | 14.67% |
-| 9 | K=128,N=128 | vectorized | 29,709 | 1102.97 | 86.30% |
-| 10 | K=128,N=640 | scalar | 856,051 | 191.39 | 14.98% |
-| 10 | K=128,N=640 | vectorized | 140,108 | 1169.38 | 91.50% |
+| 1 | K=640,N=128 | scalar | 834,346 | 196.37 | 15.37% |
+| 1 | K=640,N=128 | vectorized | 90,193 | 1816.55 | **142.14%** ⚠ |
+| 2 | K=128,N=128 | scalar | 176,188 | 185.98 | 14.55% |
+| 2 | K=128,N=128 | vectorized | 31,198 | 1050.32 | 82.18% |
+| 3 | K=128,N=128 | scalar | 172,467 | 190.00 | 14.87% |
+| 3 | K=128,N=128 | vectorized | 29,545 | 1109.09 | 86.78% |
+| 4 | K=128,N=128 | scalar | 175,569 | 186.64 | 14.60% |
+| 4 | K=128,N=128 | vectorized | 29,856 | 1097.53 | 85.88% |
+| 5 | K=128,N=8 | scalar | 11,923 | 171.77 | 13.44% |
+| 5 | K=128,N=8 | vectorized | 2,783 | 735.90 | 57.58% |
+| 6 | K=8,N=128 | scalar | 21,098 | 97.07 | 7.60% |
+| 6 | K=8,N=128 | vectorized | 13,100 | 156.34 | 12.23% |
+| 7 | K=128,N=128 | scalar | 172,293 | 190.19 | 14.88% |
+| 7 | K=128,N=128 | vectorized | 29,934 | 1094.67 | 85.66% |
+| 8 | K=128,N=128 | scalar | 174,732 | 187.53 | 14.67% |
+| 8 | K=128,N=128 | vectorized | 29,934 | 1094.67 | 85.66% |
+| 9 | K=128,N=128 | scalar | 174,283 | 188.02 | 14.71% |
+| 9 | K=128,N=128 | vectorized | 23,141 | 1416.01 | **110.80%** ⚠ |
+| 10 | K=128,N=640 | scalar | 870,019 | 188.32 | 14.74% |
+| 10 | K=128,N=640 | vectorized | 140,679 | 1164.64 | 91.13% |
 
 ⚠ = above 100% of the cold-cache ceiling — **not** explained by the
 requantize rounding bug above (that was a computed-*value* bug, and is
-now fixed; this is a cycle-*count* anomaly, and persists after the fix,
-confirming the two are unrelated). Cause still open, same as the
-matching anomaly already flagged for `dtln`'s own `FULLY_CONNECTED` in
-`../gem5_integration.md`'s "Known limitations". Notably these three
-(calls 1, 4, 8) are *not* the ones with the highest requantize-mismatch
-rate the old bug had (`call3` was worst at 12.1%, and isn't flagged
-here) — another data point that the two issues were always unrelated.
-Full table (all three ceiling columns) in
-[`roofline_log.txt`](roofline_log.txt).
+now fixed; this is a cycle-*count* phenomenon). **Update: this turned
+out to be machine-code non-determinism triggered by file-recreation
+(edit/`git checkout`), not a stable per-layer property, and not random
+between ordinary rebuilds** — see "RESOLVED" in
+`../gem5_integration.md`'s "Known limitations" for the full investigation
+(done via `dtln`, including 4 independent plain-rebuild confirmations
+showing zero drift; confirmed here too). Direct evidence in this very
+table: the build measured *right after* an edit-then-revert touched
+`fully_connected.h` (fixing the rounding bug, then separately adding and
+reverting temporary instrumentation) shows calls 1 and 9 exceeding 100%
+(142%, 111%); an *earlier* build of the same byte-identical source,
+measured before that file-recreation event, had calls 1, 4, and 8
+exceeding instead (102%, 109%, 111%). Which layers land above 100% can
+shift specifically around such an operation; it was never about
+`calls 1/4/8` (or `1/9`) being special shapes. Full table (all three
+ceiling columns) in [`roofline_log.txt`](roofline_log.txt).
 
-**All numbers in this table are now trustworthy** (post-fix, verified
-via matching output CRC32). Scalar: 14.6-15.4% efficiency for the
-`K∈{128,640}` layers, matching `dtln`'s scalar `FULLY_CONNECTED`
-closely — 7.6%/13.2% for the small `N=8`/`K=8` layers, lower because
-fixed per-call overhead dominates at that size. Vectorized: 55-110% for
-`K=8`/`N=8` (small enough that per-call overhead dominates there too),
-82-92% for the plain `K=128,N=128` layers, and the three ⚠ rows
-(calls 1, 4, 8) separately exceed 100% — a real, open timing question
-(see above), not a correctness one.
+**All numbers in this table are trustworthy as correctness** (verified
+via matching output CRC32) **and this specific build's cycle counts are
+themselves stable** (see the ⚠ note above for the narrow condition under
+which they aren't — re-measure after an edit/checkout touches
+`fully_connected.h`, don't assume a carried-over number). Scalar:
+14.6-15.4% efficiency for the `K∈{128,640}` layers, matching `dtln`'s
+scalar `FULLY_CONNECTED` closely — 7.6%/13.4% for the small `N=8`/`K=8` layers,
+lower because fixed per-call overhead dominates at that size. Vectorized:
+58-142% for `K=8`/`N=8`/`K=640` (small-K layers and the two ⚠ rows are
+where per-call overhead and build-layout variance show up most), 82-87%
+for the plain `K=128,N=128` layers.
 
 ## Ceiling shape mismatch (separate caveat)
 

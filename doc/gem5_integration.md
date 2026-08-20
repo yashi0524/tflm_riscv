@@ -1882,29 +1882,108 @@ broken.
   >100%-cold-ceiling-efficiency anomaly below (a rounding-value bug
   changes results, not cycle counts — confirmed by that anomaly
   persisting, essentially unchanged, after this fix).
-- **Open (2026-08-20): vectorized `FULLY_CONNECTED` now measures 41,373
-  cycles on `riscv64_baremetal_vector`, down from the 54,695 recorded a
-  few sessions earlier — and 41,373 pushes efficiency to 124% of the
-  `fc_bottleneck.c` `DOT_ONLY` cold-cache ceiling, which shouldn't be
-  possible (the real kernel does strictly more work than the isolated
-  dot product alone).** Confirmed genuine, not a measurement artifact:
-  reproduced identically across 4 independent checks (before/after a
-  full `rm -rf` of the entire `riscv64_baremetal_vector` gen tree, the
-  raw `MicroProfiler` log directly, and the roofline report), `git diff`
-  on `tflite-micro` shows zero kernel-source changes, toolchain confirmed
-  unchanged (GCC 13.4.0-1), and output CRC32 still matches the known-good
-  value (correctness unaffected). Best guess: the earlier 54,695 was
-  itself a stale incremental-build artifact from Make's timestamp-based
-  staleness tracking missing a real invalidation somewhere across many
-  prior sessions' builds, not a regression from 41,373. Not root-caused
-  further — doing so would need the same register-allocation/scheduling
-  instrumentation as "Realistic `FULLY_CONNECTED` bottleneck
-  decomposition" above, comparing the real kernel's inlined dot-product
-  call against `fc_bottleneck.c`'s isolated one directly.
-  **Update (2026-08-20)**: after fixing the requantize rounding bug above
-  (which added one conditional to the corrected path), the count moved
-  again to 45,658 cycles, 112.75% of the cold ceiling — still above 100%,
-  confirming this anomaly is independent of that fix and remains open.
+- **RESOLVED (2026-08-20): the >100%-cold-ceiling-efficiency anomaly was
+  never a stable property of the kernel — it's build-to-build
+  machine-code non-determinism from byte-identical source.** This
+  explains the whole trail of drifting numbers this entry used to track
+  (54,695 → 41,373 → 45,658 → 58,958, all claimed at various points to be
+  "the" cycle count for the exact same `dtln` `FULLY_CONNECTED`
+  vectorized op) — every one of those was a real, reproducible
+  measurement *of a specific build*, not evidence of a regression or a
+  stable ceiling-beating fact. Confirmed with three independent checks:
+  1. **`git diff` on `tflite-micro` shows zero source changes** between
+     the 45,658-cycle build and the 58,958-cycle build (the latter
+     obtained by adding temporary per-channel `mcycle` instrumentation to
+     `fully_connected.h`, measuring, then `git checkout --`-reverting it
+     — see below) — so the two numbers are for byte-identical source.
+  2. **The same already-built binary reruns in gem5 with bit-identical
+     results** (`md5sum` unchanged, all 4 ops' tick counts unchanged
+     across independent `gem5.opt` invocations) — ruling out simulation
+     randomness. The variance is entirely in what machine code gets
+     *produced*, not how it's *simulated*.
+  3. **Multiple independent `rm -rf <gen tree> && rebuild` cycles from
+     the same source converge on the same value and stay there** (58,958
+     reproduced 3x in a row) — so it's not per-build-invocation random
+     either; it's *sticky*, changing only when something about the build
+     inputs (not necessarily this file's own content) shifts, most likely
+     object-file link order or enumeration affecting final code/data
+     layout in memory (untested exactly which factor, but the pattern —
+     identical source, differing final binary, stable once produced — is
+     consistent with that class of cause, not a simulation or measurement
+     artifact).
+
+  **Follow-up (2026-08-20, same day): narrower and more reassuring than
+  "any rebuild might drift."** Ran 3 more independent `rm -rf <gen
+  tree> && rebuild` cycles from the *current, untouched, git-committed*
+  source tree (no edits, no `git checkout` in between) — **all 3 came
+  back bit-identical**: 58,958/437,137/313,777/86,405 ticks, every time,
+  zero variance. So plain repeated rebuilding of a stable, already-checked-
+  out tree is fully deterministic — the drift documented above (45,658 →
+  58,958) wasn't triggered by rebuilding per se, it was triggered
+  specifically by the `git checkout --`-based revert in between (which
+  recreates the file's on-disk content with a new inode/mtime, even
+  though the bytes are identical to before). That points more precisely
+  at file-recreation/timestamp churn — likely feeding into object-file
+  enumeration or link order somewhere in this Makefile-based build system
+  — as the actual trigger, not "every build is a fresh coin flip." A
+  source tree that's checked out once and rebuilt repeatedly (the normal
+  development workflow) should give a stable, trustworthy number; the
+  risk is specifically around edit-then-revert / checkout / stash-style
+  operations that recreate file content without changing it.
+
+  **Confirmed to actually resolve the anomaly, not just explain drift**:
+  regenerated the full roofline report on the 58,958-cycle build —
+  `FULLY_CONNECTED` efficiency vs. the cold ceiling is now **87.32%**,
+  below 100%, the sane result (see `dtln/performance_dtln.md`). Doing the
+  same for `anomaly_detection_int8.tflite` on a matching rebuild shows the
+  *same* shuffling at the per-layer level: calls that previously exceeded
+  100% (1, 4, 8) no longer all do (4 and 8 now sit at 85-86%; call 1 now
+  reads even higher, 142%, and call 9 — previously nowhere close — now
+  reads 111%) — confirming this isn't about specific shapes/layers being
+  special, it's which layers happen to land on favorable memory layout in
+  a given build, different every time.
+
+  **What was checked and ruled out before finding this** (kept for the
+  record, since these were real, correct eliminations, just not the
+  actual explanation):
+    - `fc_bottleneck.c`'s `volatile` offsets forcing extra per-channel
+      stack reloads (confirmed real via disassembly, but only accounted
+      for ~3 of the then-22-cycle/channel gap when removed in a scratch
+      build).
+    - A hardware prefetcher masking cold misses differently for the two
+      access patterns (ruled out entirely — no prefetcher is configured
+      anywhere in `sim_config/gem5_riscv_baremetal_fs.py`, and gem5's
+      `BaseCache.prefetcher` defaults to `NULL`).
+    - Per-channel `mcycle` instrumentation of the real kernel's dot
+      product, cross-checked against `fc_bottleneck.c`'s own per-channel
+      probe — this is what surfaced the build-sensitivity in the first
+      place (measuring the real kernel changed its own timing between two
+      supposedly-identical-source runs, which is what prompted checking
+      binary identity rather than trusting the source diff alone). One
+      methodology note from this step, worth keeping: an earlier attempt
+      at per-channel instrumentation printed each channel's result with
+      `printf` *inside* the timed loop — semihosting I/O calls between
+      channels turned out to perturb cache state enough to invalidate the
+      per-channel shape (channel costs read far higher than the
+      un-instrumented aggregate). Buffering into a static array and
+      printing everything in one burst *after* the loop fixed this.
+  **Practical takeaway for reading any of this project's absolute cycle
+  counts or ceiling-relative percentages going forward**: a number
+  measured on a stable, already-checked-out source tree and reproduced by
+  plain rebuilding *is* trustworthy — 3/3 identical reruns support that.
+  The caveat is narrower than "any rebuild is unreliable": specifically
+  distrust a cycle count if it was measured right after an edit-then-
+  revert, `git checkout`, branch switch, or stash pop touched
+  `fully_connected.h` (or likely any file feeding this build's object
+  enumeration) — re-measure after such an operation rather than trusting
+  a carried-over number. The actual range observed across this
+  investigation (mid-40s to high-50s thousands of cycles for `dtln`'s
+  `FULLY_CONNECTED`, i.e. cold-ceiling efficiency from the high-80s to
+  over 110%) still stands as what's *possible* across different binary
+  layouts, but isn't evidence that the number silently drifts on its own
+  between ordinary rebuilds. The qualitative conclusions (vectorization
+  wins big, cold-cache is the ceiling that matters, requantize rounding
+  needed the earlier fix) are unaffected either way.
 - A previously-suspected register-spill bug in the real `FullyConnected()`'s
   per-channel loop was investigated and ruled out, and the 2.581 vs. 1.203
   GFLOP/s gap against `microbenchmark/fc_bottleneck.c` that motivated it

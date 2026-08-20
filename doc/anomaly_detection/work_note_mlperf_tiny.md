@@ -120,11 +120,28 @@ happened to never hit this.
         (`librosa==0.6.0`, `numpy==1.16.0`, `tensorflow==2.3.0`,
         `numba==0.48.0` — 2019-era) that will likely need a dedicated venv
         and may not install cleanly against a current toolchain.
-      - Now secondary to the correctness bug above: even a real,
-        DCASE-derived input would still run through the currently-broken
-        vectorized path.
+      - No longer blocked on the correctness bug above (fixed) — this is
+        purely about accuracy validation now, not a prerequisite.
 - [ ] **Build a `fc_bottleneck.c`-style ceiling probe at this model's own
       shapes** (`K=8` and `K=640` particularly) — the roofline currently
       reuses `dtln`'s `K=128,N=257`-calibrated ceilings as an
       approximation. See "Ceiling shape mismatch" in
       `performance_anomaly_detection.md`.
+- [ ] **Pin down the exact mechanism behind the file-recreation-triggered
+      machine-code non-determinism found while investigating the
+      >100%-cold-ceiling anomaly** (see "RESOLVED" in
+      `../gem5_integration.md`'s "Known limitations") — narrower than
+      first thought: 4 independent plain `rm -rf <gen tree> && rebuild`
+      cycles of an untouched, checked-out source tree all reproduced
+      bit-identically (zero drift), so it's not "every rebuild is a coin
+      flip." The drift observed was specifically triggered by a `git
+      checkout --`-based revert of a `fully_connected.h` edit in between
+      two builds (recreates file content/inode/mtime without changing
+      bytes). Leading guess: object-file link order/enumeration somewhere
+      in this Makefile-based build system is sensitive to that kind of
+      file-recreation, affecting final code/data layout — not isolated
+      further. Worth doing if this project wants either (a) a build
+      procedure guaranteed immune to this (e.g. confirming whether a
+      full `git clean` + fresh checkout is more robust than edit/revert
+      cycles), or (b) to actually fix the underlying Makefile
+      non-determinism (e.g. sorting whatever enumerates object files).

@@ -1,4 +1,4 @@
-Generated: 2026-08-20T07:28:19
+Generated: 2026-08-20T09:40:53
 Model: tensorflow/lite/micro/examples/dtln/dtln_noise_suppression.tflite
 Machine: RiscvMinorCPU, 1 GHz, peak BW 12.8 GB/s, idealized peak compute 128.0 GFLOP/s, ridge point 10.0 FLOP/byte
 Empirical compute-roof ceiling: 3.723 GFLOP/s (patterns/microbenchmark/int8dot_ceiling.c)
@@ -19,11 +19,11 @@ Output CRC32: scalar=0x7E578D1C vector=0x7E578D1C
 
 | op | call | variant | cycles | T (µs) | P (MFLOP/s) | efficiency vs. 3.723 GFLOP/s (warm) | efficiency vs. 3.365 GFLOP/s (fc warm) | efficiency vs. 1.278 GFLOP/s (cold) | cycles/weight-byte |
 |---|---|---|---|---|---|---|---|---|---|
-| `UNIDIRECTIONAL_SEQUENCE_LSTM` | 1 | scalar | 2,497,482 | 2497.48 | 157.85 | 4.24% | 4.69% | 12.35% | 12.67 |
-| `UNIDIRECTIONAL_SEQUENCE_LSTM` | 1 | vectorized | 435,798 | 435.80 | 904.64 | 24.30% | 26.88% | 70.79% | 2.21 |
-| `UNIDIRECTIONAL_SEQUENCE_LSTM` | 2 | scalar | 1,703,383 | 1703.38 | 153.90 | 4.13% | 4.57% | 12.04% | 13.00 |
-| `UNIDIRECTIONAL_SEQUENCE_LSTM` | 2 | vectorized | 313,875 | 313.88 | 835.19 | 22.43% | 24.82% | 65.35% | 2.39 |
-| `FULLY_CONNECTED` | 1 | scalar | 351,306 | 351.31 | 187.28 | 5.03% | 5.57% | 14.65% | 10.68 |
-| `FULLY_CONNECTED` | 1 | vectorized | 45,658 | 45.66 | 1440.97 | 38.70% | 42.82% | 112.75% | 1.39 |
-| `LOGISTIC` | 1 | scalar | 87,894 | 87.89 | n/a (no FLOP model for this op) | -- | -- | -- | -- |
-| `LOGISTIC` | 1 | vectorized | 86,661 | 86.66 | n/a (no FLOP model for this op) | -- | -- | -- | -- |
+| `UNIDIRECTIONAL_SEQUENCE_LSTM` | 1 | scalar | 2,493,865 | 2493.87 | 158.08 | 4.25% | 4.70% | 12.37% | 12.65 |
+| `UNIDIRECTIONAL_SEQUENCE_LSTM` | 1 | vectorized | 437,137 | 437.14 | 901.87 | 24.22% | 26.80% | 70.57% | 2.22 |
+| `UNIDIRECTIONAL_SEQUENCE_LSTM` | 2 | scalar | 1,707,099 | 1707.10 | 153.56 | 4.12% | 4.56% | 12.02% | 13.02 |
+| `UNIDIRECTIONAL_SEQUENCE_LSTM` | 2 | vectorized | 313,777 | 313.78 | 835.45 | 22.44% | 24.83% | 65.37% | 2.39 |
+| `FULLY_CONNECTED` | 1 | scalar | 351,280 | 351.28 | 187.29 | 5.03% | 5.57% | 14.66% | 10.68 |
+| `FULLY_CONNECTED` | 1 | vectorized | 58,958 | 58.96 | 1115.91 | 29.97% | 33.16% | 87.32% | 1.79 |
+| `LOGISTIC` | 1 | scalar | 87,782 | 87.78 | n/a (no FLOP model for this op) | -- | -- | -- | -- |
+| `LOGISTIC` | 1 | vectorized | 86,405 | 86.41 | n/a (no FLOP model for this op) | -- | -- | -- | -- |
