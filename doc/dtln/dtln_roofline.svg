@@ -82,11 +82,11 @@
 <line x1="78" y1="297.6" x2="690" y2="297.6" stroke="#7c5cbf" stroke-width="2.5"/>
 <text x="698" y="301.6" font-size="11.5" fill="#7c5cbf" font-weight="700">1.278 GFLOP/s measured (cold)</text>
 <polygon points="454.9,391.3 462.9,399.3 454.9,407.3 446.9,399.3" fill="#c9433a" stroke="#ffffff" stroke-width="1.5"/>
-<polygon points="454.9,301.8 462.9,309.8 454.9,317.8 446.9,309.8" fill="#1baf7a" stroke="#ffffff" stroke-width="1.5"/>
+<polygon points="454.9,306.4 462.9,314.4 454.9,322.4 446.9,314.4" fill="#1baf7a" stroke="#ffffff" stroke-width="1.5"/>
 <rect x="458.3" y="394.9" width="11.2" height="11.2" fill="#c9433a" stroke="#ffffff" stroke-width="1.5"/>
-<rect x="458.3" y="306.6" width="11.2" height="11.2" fill="#1baf7a" stroke="#ffffff" stroke-width="1.5"/>
+<rect x="458.3" y="312.7" width="11.2" height="11.2" fill="#1baf7a" stroke="#ffffff" stroke-width="1.5"/>
 <circle cx="445.9" cy="391.0" r="7" fill="#c9433a" stroke="#ffffff" stroke-width="1.5" opacity="0.85"/>
-<circle cx="445.9" cy="287.0" r="7" fill="#1baf7a" stroke="#ffffff" stroke-width="1.5" opacity="0.85"/>
+<circle cx="445.9" cy="291.8" r="7" fill="#1baf7a" stroke="#ffffff" stroke-width="1.5" opacity="0.85"/>
 <rect x="78" y="535" width="12" height="12" rx="3" fill="#c9433a"/>
 <text x="95" y="545" font-size="12" fill="#3d3d3a">scalar</text>
 <rect x="169" y="535" width="12" height="12" rx="3" fill="#1baf7a"/>

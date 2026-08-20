@@ -64,10 +64,11 @@ Attempted, reusing `dtln`'s exact tooling (`4_roofline_report.py` +
 `5_gen_roofline_svg.py`, generic already — no anomaly_detection-specific
 code needed beyond one real bug fix, see below) — full writeup in
 [`performance_anomaly_detection.md`](performance_anomaly_detection.md) in
-this same folder. Headline: **this surfaced a real, reproducible,
-root-caused correctness bug** — the vectorized `FULLY_CONNECTED` path's
-output doesn't match scalar for this model (`Output CRC32:
-scalar=0xC6F70B6E vector=0xFA7AD6B9`). Root cause:
+this same folder. Headline: **this surfaced a real, reproducible
+correctness bug — root-caused and fixed the same day** — the vectorized
+`FULLY_CONNECTED` path's output didn't match scalar for this model
+(`Output CRC32: scalar=0xC6F70B6E vector=0xFA7AD6B9`, before the fix; now
+matches exactly). Root cause:
 `MultiplyByQuantizedMultiplierInlined` (the RVV-only requantize copy in
 `fully_connected.h`) hardcodes the single-rounding algorithm, but this
 build's `TFLITE_SINGLE_ROUNDING` is unset, so the real scalar path uses
@@ -89,16 +90,21 @@ happened to never hit this.
 
 ## TODO
 
-- [ ] **Fix the vectorized `FULLY_CONNECTED` correctness bug** — root
-      cause found and confirmed (see above): `MultiplyByQuantizedMultiplierInlined`
-      needs to either match `TFLITE_SINGLE_ROUNDING`'s actual selection
-      (mirror `common.cc`'s `#if`/`#else` instead of hardcoding
-      single-rounding) or just call the shared `MultiplyByQuantizedMultiplier`
-      directly and re-measure whether the inlining win (29.34% whole-model,
-      per `../gem5_integration.md`) survives losing the force-inline.
-      Higher priority than the dataset fetch below, since it's a real,
-      currently-reproducible wrong answer affecting every RVV
-      `FULLY_CONNECTED`/LSTM call in this project, not just this model.
+- [x] **Fix the vectorized `FULLY_CONNECTED` correctness bug** (2026-08-20)
+      — `MultiplyByQuantizedMultiplierInlined` now mirrors `common.cc`'s
+      own `#if TFLITE_SINGLE_ROUNDING`/`#else` structure, calling the real
+      `gemmlowp` functions directly instead of hardcoding single-rounding.
+      Verified: `anomaly_detection`'s vectorized `Output CRC32` now
+      matches scalar exactly; `dtln`'s was already accidentally correct
+      and remains unchanged (`0x7E578D1C`). Cycle counts shifted slightly
+      for both models (one extra conditional in the corrected path) — both
+      roofline docs (`performance_anomaly_detection.md`,
+      `../dtln/performance_dtln.md`) refreshed with post-fix numbers.
+      Whole-model inlining win not re-measured against the shared
+      `MultiplyByQuantizedMultiplier` directly (i.e. whether force-inlining
+      still helps vs. just calling out) — the fix kept the force-inline
+      structure, so the original 29.34% win's mechanism is intact, just
+      now computing the right thing.
 - [ ] **Move `dtln` out of the `tflite-micro` submodule too**, same
       symlink treatment as `anomaly_detection`, for consistency (both
       example patterns should live in the same place). See "Implementation"

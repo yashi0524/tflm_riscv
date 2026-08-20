@@ -1817,22 +1817,24 @@ broken.
 
 ## Known limitations / follow-ups not yet done
 
-- **Root-caused (2026-08-20), not yet fixed: `MultiplyByQuantizedMultiplierInlined`
-  (the RVV-only requantize copy in `fully_connected.h`) uses the wrong
+- **Root-caused and fixed (2026-08-20): `MultiplyByQuantizedMultiplierInlined`
+  (the RVV-only requantize copy in `fully_connected.h`) used the wrong
   rounding algorithm for this build, corrupting vectorized `FULLY_CONNECTED`/
   LSTM output by ±1 on a data-dependent fraction of values.** Found via
   `anomaly_detection_int8.tflite` (MLPerf Tiny `ad01`), whose output CRC32
-  doesn't match scalar (`0xC6F70B6E` vs `0xFA7AD6B9`, reproduced twice) —
-  but the bug itself is model-independent, latent in every RVV
+  didn't match scalar (`0xC6F70B6E` vs `0xFA7AD6B9`, reproduced twice) —
+  but the bug itself was model-independent, latent in every RVV
   `FULLY_CONNECTED`/LSTM call in this project, including `dtln`'s (just
-  not yet observed to flip a final CRC32 there). `common.cc` has two
-  `MultiplyByQuantizedMultiplier` implementations gated by `#if
-  TFLITE_SINGLE_ROUNDING`: single-rounding (shift-based) when defined
-  truthy, double-rounding (`gemmlowp::SaturatingRoundingDoublingHighMul` +
-  `RoundingDivideByPOT`) otherwise -- the default, and confirmed (grepped
-  the whole `tools/make/` tree) this project's build never defines
-  `TFLITE_SINGLE_ROUNDING`. `MultiplyByQuantizedMultiplierInlined`
-  hardcodes single-rounding *unconditionally*, contradicting its own
+  never observed to flip a final CRC32 there — `dtln`'s specific values
+  happened not to land on this bug's rounding-boundary cases, so it was
+  "accidentally" correct before this fix, not correct by construction).
+  `common.cc` has two `MultiplyByQuantizedMultiplier` implementations
+  gated by `#if TFLITE_SINGLE_ROUNDING`: single-rounding (shift-based)
+  when defined truthy, double-rounding (`gemmlowp::SaturatingRoundingDoublingHighMul`
+  + `RoundingDivideByPOT`) otherwise -- the default, and confirmed
+  (grepped the whole `tools/make/` tree) this project's build never
+  defines `TFLITE_SINGLE_ROUNDING`. `MultiplyByQuantizedMultiplierInlined`
+  hardcoded single-rounding *unconditionally*, contradicting its own
   header comment's claim of being "byte-for-byte unchanged from the
   shared version." Confirmed and quantified with a standalone probe
   (`microbenchmark/requant_correctness_probe.c`) reimplementing both
@@ -1841,16 +1843,28 @@ broken.
   455/20,000 mismatches, every one off by exactly `±1` (the textbook
   single-vs-double-rounding divergence, not a magnitude bug), 0.1%-12.1%
   per layer depending on its own multiplier/shift. Over 10 sequential
-  layers this compounds into a guaranteed-different final result,
+  layers this compounded into a guaranteed-different final result,
   matching the observed CRC32 mismatch. `Int8DotProductRvv` itself was
   separately verified correct at every shape/offset this model uses
   (`microbenchmark/int8dot_correctness_probe.c`, 10/10 passed) — ruling
-  out an earlier `K=8`/`K=640` shape hypothesis; the bug is entirely in
-  the requantize step. Fix not yet applied — see "Correctness" in
+  out an earlier `K=8`/`K=640` shape hypothesis; the bug was entirely in
+  the requantize step. **Fix**: `MultiplyByQuantizedMultiplierInlined`
+  now mirrors `common.cc`'s own `#if`/`#else` exactly, calling the real
+  `gemmlowp` functions directly (`fully_connected.h` already transitively
+  includes `fixedpoint.h` via `common.h`) instead of a from-scratch
+  reimplementation, for both branches. Verified: `anomaly_detection`'s
+  vectorized `Output CRC32` now matches scalar exactly (`0xC6F70B6E`);
+  `dtln`'s vectorized `Output CRC32` is unchanged (`0x7E578D1C`). Cycle
+  counts shifted slightly for both models (the corrected double-rounding
+  path has one more conditional than the previously-hardcoded
+  single-rounding path) — `dtln/performance_dtln.md` and
+  `anomaly_detection/performance_anomaly_detection.md` were both
+  refreshed with post-fix numbers. See "Correctness" in
   [`anomaly_detection/performance_anomaly_detection.md`](anomaly_detection/performance_anomaly_detection.md)
-  for the full writeup, including why this does *not* explain the
-  separate >100%-cold-ceiling-efficiency anomaly below (a rounding-value
-  bug changes results, not cycle counts).
+  for the full writeup, including why this never explained the separate
+  >100%-cold-ceiling-efficiency anomaly below (a rounding-value bug
+  changes results, not cycle counts — confirmed by that anomaly
+  persisting, essentially unchanged, after this fix).
 - **Open (2026-08-20): vectorized `FULLY_CONNECTED` now measures 41,373
   cycles on `riscv64_baremetal_vector`, down from the 54,695 recorded a
   few sessions earlier — and 41,373 pushes efficiency to 124% of the
@@ -1870,6 +1884,10 @@ broken.
   instrumentation as "Realistic `FULLY_CONNECTED` bottleneck
   decomposition" above, comparing the real kernel's inlined dot-product
   call against `fc_bottleneck.c`'s isolated one directly.
+  **Update (2026-08-20)**: after fixing the requantize rounding bug above
+  (which added one conditional to the corrected path), the count moved
+  again to 45,658 cycles, 112.75% of the cold ceiling — still above 100%,
+  confirming this anomaly is independent of that fix and remains open.
 - A previously-suspected register-spill bug in the real `FullyConnected()`'s
   per-channel loop was investigated and ruled out, and the 2.581 vs. 1.203
   GFLOP/s gap against `microbenchmark/fc_bottleneck.c` that motivated it

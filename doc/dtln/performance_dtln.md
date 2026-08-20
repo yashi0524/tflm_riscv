@@ -342,19 +342,35 @@ above). Three efficiency columns below, one per empirical ceiling (see
 "Machine parameters" above and the "Second correction" further down for
 what each represents) — **the rightmost, vs. the cold-cache ceiling, is
 the one that matters for this project's actual single-shot workload, and
-it's the one to read: every vectorized row lands at 75-94% of it**, a very
-different picture than the 4-36% the two warm-ceiling columns show for
-the same rows (scalar rows stay in the low-teens even against cold,
+it's the one to read: every vectorized row lands at 65-113% of it**, a
+very different picture than the 4-39% the two warm-ceiling columns show
+for the same rows (scalar rows stay in the low-teens even against cold,
 since they're not the target of the vectorization work below).
+
+**Updated 2026-08-20 after fixing a real RVV correctness bug**
+(`MultiplyByQuantizedMultiplierInlined` was using the wrong rounding
+algorithm — see [`../gem5_integration.md`](../gem5_integration.md)'s
+"Known limitations" for the full root-cause writeup, found while doing
+the same roofline analysis for `anomaly_detection_int8.tflite`). Output
+CRC32 is unchanged (`0x7E578D1C` — this kernel's specific values never
+happened to land on this bug's rounding-boundary cases), but cycle counts
+shifted slightly: the corrected double-rounding path has one more
+conditional than the previously-hardcoded (and wrong, for this build)
+single-rounding path.
 
 | | Cycles | T (µs) | P (MFLOP/s) | Eff. vs. 3.723 GFLOP/s (warm) | Eff. vs. 3.365 GFLOP/s (fc warm) | **Eff. vs. 1.278 GFLOP/s (cold)** | Cycles/weight-byte |
 |---|---|---|---|---|---|---|---|
-| `FULLY_CONNECTED` (scalar baseline) | 351,575 | 351.58 | 187.14 | 5.03% | 5.56% | **14.64%** | 10.69 |
-| `FULLY_CONNECTED` (vectorized) | 54,695 | 54.70 | 1202.89 | 32.31% | 35.75% | **94.12%** | 1.66 |
-| LSTM 1st call (scalar) | 2,497,048 | 2497.05 | 157.88 | 4.24% | 4.69% | **12.35%** | 12.67 |
-| LSTM 1st call (vectorized) | 395,320 | 395.32 | 997.27 | 26.79% | 29.64% | **78.03%** | 2.01 |
-| LSTM 2nd call (scalar) | 1,703,705 | 1703.70 | 153.87 | 4.13% | 4.57% | **12.04%** | 13.00 |
-| LSTM 2nd call (vectorized) | 270,343 | 270.34 | 969.67 | 26.05% | 28.82% | **75.87%** | 2.06 |
+| `FULLY_CONNECTED` (scalar baseline) | 351,306 | 351.31 | 187.28 | 5.03% | 5.57% | **14.65%** | 10.68 |
+| `FULLY_CONNECTED` (vectorized) | 45,658 | 45.66 | 1440.97 | 38.70% | 42.82% | **112.75%** ⚠ | 1.39 |
+| LSTM 1st call (scalar) | 2,497,482 | 2497.48 | 157.85 | 4.24% | 4.69% | **12.35%** | 12.67 |
+| LSTM 1st call (vectorized) | 435,798 | 435.80 | 904.64 | 24.30% | 26.88% | **70.79%** | 2.21 |
+| LSTM 2nd call (scalar) | 1,703,383 | 1703.38 | 153.90 | 4.13% | 4.57% | **12.04%** | 13.00 |
+| LSTM 2nd call (vectorized) | 313,875 | 313.88 | 835.19 | 22.43% | 24.82% | **65.35%** | 2.39 |
+
+⚠ = above 100% of the cold-cache ceiling — a separate, still-open timing
+anomaly (not caused by the rounding bug above, which affects computed
+*values*, not cycle counts) tracked in
+[`../gem5_integration.md`](../gem5_integration.md)'s "Known limitations".
 
 > Updated after inlining `MultiplyByQuantizedMultiplier` on this hot path
 > (see below) — was 83,959/573,947/394,316 cycles, ~18-21% efficiency,
@@ -363,7 +379,7 @@ since they're not the target of the vectorization work below).
 **Second correction (2026-08-19): the 3.723 GFLOP/s ceiling itself
 assumes a warm cache — the real, achievable ceiling for this kernel's
 actual single-shot execution is much lower, and `FULLY_CONNECTED`'s
-efficiency against it is ~94%, not 32.31%.** `int8dot_ceiling.c`'s probe
+efficiency against it is well over 100%, not 38.70%.** `int8dot_ceiling.c`'s probe
 (and `fc_bottleneck.c`'s original, default configuration) both reuse a
 small buffer across many iterations, so after the first touch it's
 permanently L1-resident — that's a legitimate *compute/FU-throughput*
@@ -383,11 +399,16 @@ compulsory, not capacity-bound).
 
 That cold-cache ceiling is **1.278 GFLOP/s** (dot-only) / **1.077
 GFLOP/s** (full pipeline) at FC's exact shape — against which
-`FULLY_CONNECTED`'s actual **1202.89 MFLOP/s** is **94.12%** efficient
-(and actually *beats* the full-pipeline cold ceiling, 111.7%, because the
-real kernel hoists its requantize constants out of the loop while
-`fc_bottleneck.c`'s deliberately-`volatile` version doesn't — see the
-same section for why). A third ceiling, `fc_bottleneck.c`'s own
+`FULLY_CONNECTED`'s actual **1440.97 MFLOP/s** is **112.75%** "efficient"
+against the dot-only ceiling and **133.79%** against the full-pipeline
+one. Both exceeding 100% is the still-open timing anomaly flagged in the
+table above (⚠) and tracked in
+[`../gem5_integration.md`](../gem5_integration.md)'s "Known
+limitations" — a correct computation doing strictly more work than
+`fc_bottleneck.c`'s isolated dot product shouldn't finish faster than it,
+so something about this comparison (not this kernel's correctness, which
+is independently confirmed by the matching output CRC32) is still not
+fully understood. A third ceiling, `fc_bottleneck.c`'s own
 DOT_ONLY *warm*-cache result (**3.365 GFLOP/s**, `FC_CACHE_MODE=0`), is
 tracked alongside it in the table above as a same-harness cross-check —
 same op, shape, and single-pass count as the cold ceiling, differing
@@ -396,16 +417,19 @@ those two columns isolates exactly the cache-eviction cost rather than
 mixing in `int8dot_ceiling.c`'s different instruction interleaving. This
 has not been separately measured for the LSTM rows below — their gate
 shapes (`K=128` and `K=257`, mixed within each call) don't exactly match
-FC's probed shape (`K=128,N=257`), so extrapolating the same ~75-94%
-figures to them is plausible (same read-once access pattern, same
-dominant cost) but unverified; a LSTM-shaped cold probe hasn't been
-built.
+FC's probed shape (`K=128,N=257`), so extrapolating similar figures to
+them (LSTM lands at 65-71% against the same cold ceiling, notably lower
+than FC's) is plausible (same read-once access pattern, same dominant
+cost) but unverified; a LSTM-shaped cold probe hasn't been built.
 
 **Verdict: the vectorized kernel is not "30-40× short" (the original,
 wrong `25.6 GFLOP/s` framing) or even "~3× short" (the first correction's
-`3.723 GFLOP/s` framing) — for `FULLY_CONNECTED`, it's already within
-~6% of what this specific single-shot invocation can genuinely achieve.**
-Both earlier framings were honest measurements against the wrong
+`3.723 GFLOP/s` framing) — for `FULLY_CONNECTED`, it's already at, and
+by this specific comparison's own numbers slightly past, what this
+specific single-shot invocation can genuinely achieve (112.75% of the
+cold-cache ceiling — see the ⚠ note above for why that's still an open
+question, not a claimed >100% speedup).** Both earlier framings were
+honest measurements against the wrong
 denominator: the idealized ceiling ignored `MinorCPU`'s FU count/issue
 width entirely, and the measured-but-warm ceiling ignored that this
 workload's weights are never cached before they're read. Neither error

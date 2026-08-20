@@ -165,3 +165,9 @@ vectorized-output CRC32 mismatch, see
   **455/20,000 mismatch, every one off by exactly `±1`** — confirmed root
   cause of the CRC32 mismatch, and latent in every RVV
   `FULLY_CONNECTED`/LSTM call in this project (not just this model).
+  **Fixed 2026-08-20**: `MultiplyByQuantizedMultiplierInlined` now
+  mirrors `common.cc`'s `#if TFLITE_SINGLE_ROUNDING`/`#else` structure
+  exactly, calling the real `gemmlowp` functions directly instead of
+  hardcoding one branch — this probe (and the mismatch counts above) is
+  kept as-is, describing the pre-fix bug, as a permanent regression test
+  against reintroducing it.

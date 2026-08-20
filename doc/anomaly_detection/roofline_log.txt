@@ -1,12 +1,11 @@
-Generated: 2026-08-20T04:05:10
+Generated: 2026-08-20T07:28:51
 Model: tensorflow/lite/micro/examples/anomaly_detection/anomaly_detection_int8.tflite
 Machine: RiscvMinorCPU, 1 GHz, peak BW 12.8 GB/s, idealized peak compute 128.0 GFLOP/s, ridge point 10.0 FLOP/byte
 Empirical compute-roof ceiling: 3.723 GFLOP/s (patterns/microbenchmark/int8dot_ceiling.c)
 Empirical fc_bottleneck warm-cache ceiling: 3.365 GFLOP/s (patterns/microbenchmark/fc_bottleneck.c, FC_VARIANT=4 FC_CACHE_MODE=0 -- same op, shape, and single-pass count as the cold-cache ceiling below, differing only in whether operands were evicted from L1 first)
 Empirical cold-cache ceiling: 1.278 GFLOP/s (patterns/microbenchmark/fc_bottleneck.c, FC_VARIANT=4 FC_CACHE_MODE=1 -- the achievable ceiling for this project's actual single-shot Invoke() workload, see doc/dtln/performance_dtln.md's "Second correction")
 Input CRC32: scalar=0x9F759053 vector=0x9F759053
-Output CRC32: scalar=0xC6F70B6E vector=0xFA7AD6B9
-WARNING: Output CRC32 mismatch -- should be identical; a vectorized-kernel correctness regression, or a stale/mismatched build, would look like this.
+Output CRC32: scalar=0xC6F70B6E vector=0xC6F70B6E
 
 ### Arithmetic intensity
 
@@ -27,23 +26,23 @@ WARNING: Output CRC32 mismatch -- should be identical; a vectorized-kernel corre
 
 | op | call | variant | cycles | T (µs) | P (MFLOP/s) | efficiency vs. 3.723 GFLOP/s (warm) | efficiency vs. 3.365 GFLOP/s (fc warm) | efficiency vs. 1.278 GFLOP/s (cold) | cycles/weight-byte |
 |---|---|---|---|---|---|---|---|---|---|
-| `FULLY_CONNECTED` | 1 | scalar | 834,549 | 834.55 | 196.32 | 5.27% | 5.83% | 15.36% | 10.19 |
-| `FULLY_CONNECTED` | 1 | vectorized | 123,205 | 123.21 | 1329.82 | 35.72% | 39.52% | 104.05% | 1.50 |
-| `FULLY_CONNECTED` | 2 | scalar | 175,587 | 175.59 | 186.62 | 5.01% | 5.55% | 14.60% | 10.72 |
-| `FULLY_CONNECTED` | 2 | vectorized | 29,126 | 29.13 | 1125.04 | 30.22% | 33.43% | 88.03% | 1.78 |
-| `FULLY_CONNECTED` | 3 | scalar | 174,666 | 174.67 | 187.60 | 5.04% | 5.58% | 14.68% | 10.66 |
-| `FULLY_CONNECTED` | 3 | vectorized | 28,007 | 28.01 | 1169.99 | 31.43% | 34.77% | 91.55% | 1.71 |
-| `FULLY_CONNECTED` | 4 | scalar | 174,573 | 174.57 | 187.70 | 5.04% | 5.58% | 14.69% | 10.66 |
-| `FULLY_CONNECTED` | 4 | vectorized | 21,647 | 21.65 | 1513.74 | 40.66% | 44.98% | 118.45% | 1.32 |
-| `FULLY_CONNECTED` | 5 | scalar | 11,879 | 11.88 | 172.41 | 4.63% | 5.12% | 13.49% | 11.60 |
-| `FULLY_CONNECTED` | 5 | vectorized | 2,921 | 2.92 | 701.13 | 18.83% | 20.84% | 54.86% | 2.85 |
-| `FULLY_CONNECTED` | 6 | scalar | 21,055 | 21.05 | 97.27 | 2.61% | 2.89% | 7.61% | 20.56 |
-| `FULLY_CONNECTED` | 6 | vectorized | 11,659 | 11.66 | 175.66 | 4.72% | 5.22% | 13.74% | 11.39 |
-| `FULLY_CONNECTED` | 7 | scalar | 174,658 | 174.66 | 187.61 | 5.04% | 5.58% | 14.68% | 10.66 |
-| `FULLY_CONNECTED` | 7 | vectorized | 28,056 | 28.06 | 1167.95 | 31.37% | 34.71% | 91.39% | 1.71 |
-| `FULLY_CONNECTED` | 8 | scalar | 174,313 | 174.31 | 187.98 | 5.05% | 5.59% | 14.71% | 10.64 |
-| `FULLY_CONNECTED` | 8 | vectorized | 21,571 | 21.57 | 1519.08 | 40.80% | 45.14% | 118.86% | 1.32 |
-| `FULLY_CONNECTED` | 9 | scalar | 173,105 | 173.10 | 189.30 | 5.08% | 5.63% | 14.81% | 10.57 |
-| `FULLY_CONNECTED` | 9 | vectorized | 28,157 | 28.16 | 1163.76 | 31.26% | 34.58% | 91.06% | 1.72 |
-| `FULLY_CONNECTED` | 10 | scalar | 868,578 | 868.58 | 188.63 | 5.07% | 5.61% | 14.76% | 10.60 |
-| `FULLY_CONNECTED` | 10 | vectorized | 129,547 | 129.55 | 1264.71 | 33.97% | 37.58% | 98.96% | 1.58 |
+| `FULLY_CONNECTED` | 1 | scalar | 833,929 | 833.93 | 196.47 | 5.28% | 5.84% | 15.37% | 10.18 |
+| `FULLY_CONNECTED` | 1 | vectorized | 125,153 | 125.15 | 1309.12 | 35.16% | 38.90% | 102.43% | 1.53 |
+| `FULLY_CONNECTED` | 2 | scalar | 173,027 | 173.03 | 189.38 | 5.09% | 5.63% | 14.82% | 10.56 |
+| `FULLY_CONNECTED` | 2 | vectorized | 31,186 | 31.19 | 1050.73 | 28.22% | 31.23% | 82.22% | 1.90 |
+| `FULLY_CONNECTED` | 3 | scalar | 174,974 | 174.97 | 187.27 | 5.03% | 5.57% | 14.65% | 10.68 |
+| `FULLY_CONNECTED` | 3 | vectorized | 29,640 | 29.64 | 1105.53 | 29.69% | 32.85% | 86.50% | 1.81 |
+| `FULLY_CONNECTED` | 4 | scalar | 175,397 | 175.40 | 186.82 | 5.02% | 5.55% | 14.62% | 10.71 |
+| `FULLY_CONNECTED` | 4 | vectorized | 23,429 | 23.43 | 1398.61 | 37.57% | 41.56% | 109.44% | 1.43 |
+| `FULLY_CONNECTED` | 5 | scalar | 12,187 | 12.19 | 168.05 | 4.51% | 4.99% | 13.15% | 11.90 |
+| `FULLY_CONNECTED` | 5 | vectorized | 2,936 | 2.94 | 697.55 | 18.74% | 20.73% | 54.58% | 2.87 |
+| `FULLY_CONNECTED` | 6 | scalar | 21,007 | 21.01 | 97.49 | 2.62% | 2.90% | 7.63% | 20.51 |
+| `FULLY_CONNECTED` | 6 | vectorized | 13,239 | 13.24 | 154.69 | 4.16% | 4.60% | 12.10% | 12.93 |
+| `FULLY_CONNECTED` | 7 | scalar | 174,596 | 174.60 | 187.68 | 5.04% | 5.58% | 14.69% | 10.66 |
+| `FULLY_CONNECTED` | 7 | vectorized | 29,950 | 29.95 | 1094.09 | 29.39% | 32.51% | 85.61% | 1.83 |
+| `FULLY_CONNECTED` | 8 | scalar | 174,340 | 174.34 | 187.95 | 5.05% | 5.59% | 14.71% | 10.64 |
+| `FULLY_CONNECTED` | 8 | vectorized | 23,157 | 23.16 | 1415.04 | 38.01% | 42.05% | 110.72% | 1.41 |
+| `FULLY_CONNECTED` | 9 | scalar | 174,732 | 174.73 | 187.53 | 5.04% | 5.57% | 14.67% | 10.66 |
+| `FULLY_CONNECTED` | 9 | vectorized | 29,709 | 29.71 | 1102.97 | 29.63% | 32.78% | 86.30% | 1.81 |
+| `FULLY_CONNECTED` | 10 | scalar | 856,051 | 856.05 | 191.39 | 5.14% | 5.69% | 14.98% | 10.45 |
+| `FULLY_CONNECTED` | 10 | vectorized | 140,108 | 140.11 | 1169.38 | 31.41% | 34.75% | 91.50% | 1.71 |
