@@ -81,23 +81,23 @@
 <text x="698" y="266.6" font-size="11.5" fill="#c98500" font-weight="700">3.365 GFLOP/s measured (fc warm)</text>
 <line x1="78" y1="297.6" x2="690" y2="297.6" stroke="#7c5cbf" stroke-width="2.5"/>
 <text x="698" y="301.6" font-size="11.5" fill="#7c5cbf" font-weight="700">1.278 GFLOP/s measured (cold)</text>
-<polygon points="454.9,391.2 462.9,399.2 454.9,407.2 446.9,399.2" fill="#c9433a" stroke="#ffffff" stroke-width="1.5"/>
-<polygon points="454.9,306.6 462.9,314.6 454.9,322.6 446.9,314.6" fill="#1baf7a" stroke="#ffffff" stroke-width="1.5"/>
-<rect x="458.3" y="395.0" width="11.2" height="11.2" fill="#c9433a" stroke="#ffffff" stroke-width="1.5"/>
-<rect x="458.3" y="312.7" width="11.2" height="11.2" fill="#1baf7a" stroke="#ffffff" stroke-width="1.5"/>
-<circle cx="445.9" cy="391.0" r="7" fill="#c9433a" stroke="#ffffff" stroke-width="1.5" opacity="0.85"/>
-<circle cx="445.9" cy="304.2" r="7" fill="#1baf7a" stroke="#ffffff" stroke-width="1.5" opacity="0.85"/>
-<rect x="78" y="535" width="12" height="12" rx="3" fill="#c9433a"/>
-<text x="95" y="545" font-size="12" fill="#3d3d3a">scalar</text>
-<rect x="169" y="535" width="12" height="12" rx="3" fill="#1baf7a"/>
-<text x="186" y="545" font-size="12" fill="#3d3d3a">vectorized</text>
-<line x1="292" y1="540" x2="312" y2="540" stroke="#767671" stroke-width="2" stroke-dasharray="4 3"/>
-<text x="318" y="545" font-size="12" fill="#3d3d3a">Memory roof</text>
-<polygon points="84.0,558.0 92.0,566.0 84.0,574.0 76.0,566.0" fill="#767671" stroke="#ffffff" stroke-width="1.5"/>
+<circle cx="454.9" cy="399.2" r="7" fill="#2a78d6" stroke="#ffffff" stroke-width="1.5" opacity="0.85"/>
+<rect x="449.3" y="309.0" width="11.2" height="11.2" fill="#2a78d6" stroke="#ffffff" stroke-width="1.5"/>
+<circle cx="463.9" cy="400.6" r="7" fill="#eb6834" stroke="#ffffff" stroke-width="1.5" opacity="0.85"/>
+<rect x="458.3" y="312.7" width="11.2" height="11.2" fill="#eb6834" stroke="#ffffff" stroke-width="1.5"/>
+<circle cx="445.9" cy="391.0" r="7" fill="#1baf7a" stroke="#ffffff" stroke-width="1.5" opacity="0.85"/>
+<rect x="440.3" y="298.6" width="11.2" height="11.2" fill="#1baf7a" stroke="#ffffff" stroke-width="1.5"/>
+<circle cx="84.0" cy="541.0" r="6" fill="#767671" stroke="#ffffff" stroke-width="1.5" opacity="0.85"/>
+<text x="98" y="545" font-size="12" fill="#3d3d3a">scalar</text>
+<rect x="169.2" y="536.2" width="9.6" height="9.6" fill="#767671" stroke="#ffffff" stroke-width="1.5"/>
+<text x="188" y="545" font-size="12" fill="#3d3d3a">vectorized</text>
+<line x1="290" y1="540" x2="310" y2="540" stroke="#767671" stroke-width="2" stroke-dasharray="4 3"/>
+<text x="316" y="545" font-size="12" fill="#3d3d3a">Memory roof</text>
+<circle cx="84.0" cy="566.0" r="7" fill="#2a78d6" stroke="#ffffff" stroke-width="1.5" opacity="0.85"/>
 <text x="98" y="570" font-size="12" fill="#3d3d3a">LSTM (call 1)</text>
-<rect x="224.4" y="560.4" width="11.2" height="11.2" fill="#767671" stroke="#ffffff" stroke-width="1.5"/>
+<circle cx="230.0" cy="566.0" r="7" fill="#eb6834" stroke="#ffffff" stroke-width="1.5" opacity="0.85"/>
 <text x="244" y="570" font-size="12" fill="#3d3d3a">LSTM (call 2)</text>
-<circle cx="376.0" cy="566.0" r="7" fill="#767671" stroke="#ffffff" stroke-width="1.5" opacity="0.85"/>
+<circle cx="376.0" cy="566.0" r="7" fill="#1baf7a" stroke="#ffffff" stroke-width="1.5" opacity="0.85"/>
 <text x="390" y="570" font-size="12" fill="#3d3d3a">FULLY_CONNECTED</text>
 <text x="78" y="594" font-size="10.5" fill="#767671">Gray dashed lines: idealized 1-vector-MAC-instr/cycle ceiling (too optimistic). Blue dashed lines: warm-cache FU ceiling (int8dot_ceiling.c -- correct FU throughput, but data is never actually this cached).</text>
 <text x="78" y="610" font-size="10.5" fill="#767671">Amber dashed lines: fc_bottleneck.c warm-cache ceiling (FC_CACHE_MODE=0) -- same op/shape/pass-count as the purple cold-cache line, differing only in cache state. Purple solid line: cold-cache ceiling (FC_CACHE_MODE=1) -- the ceiling that actually applies here, since dtln_noise_suppression's single Invoke() call reads every weight tensor exactly once, never cached.</text>

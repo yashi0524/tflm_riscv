@@ -153,28 +153,77 @@ def build_points(ai_rows, perf_rows):
 # SVG rendering.
 # ---------------------------------------------------------------------------
 
-VARIANT_COLORS = {
-    "scalar": "#c9433a",
-    "vectorized": "#1baf7a",
+# Color identifies the subitem (op+call); shape identifies scalar vs
+# vectorized (2 values, plain circle/square is plenty). This is a scatter
+# plot, so the dataviz skill's *all-pairs* CVD check applies (any two
+# marks can end up neighbors), not just the adjacent-pair check -- that
+# caps a fixed-hue categorical palette at 3 series (palette.md's slots
+# 1-3 are the only ones that clear all-pairs in both modes). dtln's 3
+# distinct (op,call) subitems fit that exactly. A model with more
+# subitems than that (e.g. anomaly_detection's 10 sequential
+# FULLY_CONNECTED calls) exceeds the categorical cap, but call index is
+# itself an ordered position (layer depth), so it gets an *ordinal*
+# treatment instead. palette.md's single-hue blue ramp technically
+# covers this, but at 10 steps its adjacent CVD separation collapses
+# (light->dark blue steps sit ~2-3 dE apart in OKLab, well under the
+# skill's 8 target) -- distinguishable in a legend swatch, not as loose
+# scatter points. Swapped for a warm-orange -> cool-blue sweep instead:
+# palette.md's slot-2 orange (#eb6834) and slot-1 blue (#2a78d6)
+# endpoints, interpolated in OKLCH along the shorter hue arc (through
+# red/magenta/violet, not green) with a small alternating lightness
+# zigzag on top of the monotone L trend so neighbors don't just differ
+# by hue -- computed via the standard sRGB<->OKLab conversion (Bjorn
+# Ottosson), not eyeballed. Verified: worst adjacent AND worst all-pairs
+# OKLab dE*100 both ~9.0 (clears this skill's >=8 CVD target), min
+# contrast 3.25:1 on the #fcfcfb light surface (clears the >=3:1 mark
+# floor) -- see doc/anomaly_detection notes for the generating script.
+CATEGORICAL_COLORS = ["#2a78d6", "#eb6834", "#1baf7a"]  # palette.md slots 1-3 (blue/orange/aqua)
+
+ORDINAL_RAMP = [  # warm orange -> cool blue, OKLCH-interpolated (light->dark call order)
+    "#e76530", "#c53b3c", "#dd5274", "#b03175", "#be50a8",
+    "#8c369f", "#8f57cb", "#5a40b5", "#4e63d4", "#004daf",
+]
+
+VARIANT_SHAPES = {
+    "scalar": "circle",
+    "vectorized": "square",
 }
 
-# Marker shape identifies the op (color already identifies scalar/vectorized).
-OP_MARKERS = {
-    "FULLY_CONNECTED": "circle",
-    "UNIDIRECTIONAL_SEQUENCE_LSTM": None,  # assigned per call below (diamond/square)
-}
+
+def ordered_subitems(points):
+    """[(op, call), ...] in first-seen order -- the stable order every
+    color/legend/jitter assignment below is keyed against."""
+    seen = []
+    for p in points:
+        k = (p["op"], p["call"])
+        if k not in seen:
+            seen.append(k)
+    return seen
 
 
-def op_call_label(op, call):
+def assign_subitem_colors(subitems):
+    """{(op, call): hex, ...} -- categorical (3-color cap) if there are
+    <=3 distinct subitems, else the ordinal ramp. Beyond len(ORDINAL_RAMP)
+    (10) subitems, steps repeat -- no chart this project produces has hit
+    that yet; a real 11th+ series should fold into "Other" or facet
+    instead (see the dataviz skill), not silently reuse a color here."""
+    n = len(subitems)
+    if n <= len(CATEGORICAL_COLORS):
+        return {k: CATEGORICAL_COLORS[i] for i, k in enumerate(subitems)}
+    step = (len(ORDINAL_RAMP) - 1) / max(n - 1, 1)
+    return {k: ORDINAL_RAMP[round(i * step) % len(ORDINAL_RAMP)] for i, k in enumerate(subitems)}
+
+
+def op_call_label(op, call, compact):
+    """compact=True when every point in the plot shares the same op (e.g.
+    anomaly_detection's 10 FULLY_CONNECTED calls) -- the op name is then
+    redundant across every legend entry, so just "call N" instead, short
+    enough that a 10-entry legend still fits."""
+    if compact:
+        return f"call {call}"
     if op == "FULLY_CONNECTED":
         return "FULLY_CONNECTED"
     return f"LSTM (call {call})"
-
-
-def op_call_marker(op, call):
-    if op == "FULLY_CONNECTED":
-        return "circle"
-    return "diamond" if call == "1" else "square"
 
 
 def marker_svg(shape, cx, cy, color, r=7):
@@ -221,6 +270,26 @@ def compute_x_jitter(points):
     return jitter
 
 
+LEGEND_ROW_H = 22
+
+
+def render_legend_row(entries, start_x, start_y, max_x, text_color, row_h=LEGEND_ROW_H):
+    """entries: [(marker_fn(cx, cy) -> svg str, label), ...]. Wraps to a new
+    row (start_x again, y += row_h) whenever the next entry would cross
+    max_x -- shared by both legends below so a >3-subitem legend (e.g.
+    anomaly_detection's 10 calls) doesn't run off the canvas. Returns
+    (svg_lines, end_y) so the caller can lay out whatever comes after."""
+    svg, x, y = [], start_x, start_y
+    for marker_fn, label in entries:
+        width = 20 + 8 * len(label) + 22
+        if x + width > max_x and x > start_x:
+            x, y = start_x, y + row_h
+        svg.append(marker_fn(x + 6, y - 4))
+        svg.append(f'<text x="{x+20}" y="{y}" font-size="12" fill="{text_color}">{label}</text>')
+        x += width
+    return svg, y
+
+
 def render_svg(meta, points):
     W = 900
     ML, MR, MT = 78, 210, 40
@@ -228,9 +297,28 @@ def render_svg(meta, points):
     axisBottom = MT + plotH
     tickLabelY = axisBottom + 20
     axisTitleY = axisBottom + 40
+
+    subitems = ordered_subitems(points)
+    subitem_colors = assign_subitem_colors(subitems)
+    compact_labels = len({op for op, _call in subitems}) == 1
+
+    # Legend 2 (subitem colors) can wrap to multiple rows for models with
+    # many subitems (e.g. anomaly_detection's 10 calls) -- simulate it
+    # once here (same width math as the real render below) purely to
+    # learn how many rows it takes, so the footnotes/canvas height below
+    # can leave room for it.
+    _sim_x, _sim_rows = ML, 1
+    for _op, _call in subitems:
+        _label = op_call_label(_op, _call, compact_labels)
+        _width = 20 + 8 * len(_label) + 22
+        if _sim_x + _width > (W - 20) and _sim_x > ML:
+            _sim_x, _sim_rows = ML, _sim_rows + 1
+        _sim_x += _width
+    legend2_extra_rows = _sim_rows - 1
+
     legend1Y = axisBottom + 65
     legend2Y = axisBottom + 90
-    footnoteY = axisBottom + 114
+    footnoteY = axisBottom + 114 + legend2_extra_rows * LEGEND_ROW_H
     footnote2Y = footnoteY + 16
     footnote3Y = footnote2Y + 16
     H = footnote3Y + 16
@@ -426,37 +514,34 @@ def render_svg(meta, points):
                    f'stroke-width="2.5"/>')
         svg.append(f'<text x="{ML+plotW+8}" y="{y+4:.1f}" font-size="11.5" fill="#7c5cbf" font-weight="700">{cold_ceiling:g} GFLOP/s measured (cold)</text>')
 
-    # scatter points
+    # scatter points -- color = subitem (op+call), shape = scalar/vectorized
     jitter = compute_x_jitter(points)
     for p in points:
         cx = px(p["ai"]) + jitter.get((p["op"], p["call"]), 0)
         cy = py(p["gflops"])
-        color = VARIANT_COLORS.get(p["variant"], TEXT_MUTED)
-        shape = op_call_marker(p["op"], p["call"])
+        color = subitem_colors.get((p["op"], p["call"]), TEXT_MUTED)
+        shape = VARIANT_SHAPES.get(p["variant"], "circle")
         svg.append(marker_svg(shape, cx, cy, color))
 
-    # legend: variant (color)
+    # legend: variant (shape) -- always 2 entries, never wraps
     leg_y, leg_x = legend1Y, ML
-    for variant, color in VARIANT_COLORS.items():
-        svg.append(f'<rect x="{leg_x}" y="{leg_y-10}" width="12" height="12" rx="3" fill="{color}"/>')
-        svg.append(f'<text x="{leg_x+17}" y="{leg_y}" font-size="12" fill="{TEXT_SEC}">{variant}</text>')
-        leg_x += 17 + 8 * len(variant) + 26
+    for variant, shape in VARIANT_SHAPES.items():
+        svg.append(marker_svg(shape, leg_x + 6, leg_y - 4, TEXT_MUTED, r=6))
+        svg.append(f'<text x="{leg_x+20}" y="{leg_y}" font-size="12" fill="{TEXT_SEC}">{variant}</text>')
+        leg_x += 20 + 8 * len(variant) + 22
     svg.append(f'<line x1="{leg_x}" y1="{leg_y-5}" x2="{leg_x+20}" y2="{leg_y-5}" stroke="{TEXT_MUTED}" stroke-width="2" stroke-dasharray="4 3"/>')
     svg.append(f'<text x="{leg_x+26}" y="{leg_y}" font-size="12" fill="{TEXT_SEC}">Memory roof</text>')
 
-    # legend: op (shape)
-    leg_y2, leg_x2 = legend2Y, ML
-    seen_ops = []
-    for p in points:
-        k = (p["op"], p["call"])
-        if k not in seen_ops:
-            seen_ops.append(k)
-    for op, call in seen_ops:
-        shape = op_call_marker(op, call)
-        label = op_call_label(op, call)
-        svg.append(marker_svg(shape, leg_x2 + 6, leg_y2 - 4, TEXT_MUTED))
-        svg.append(f'<text x="{leg_x2+20}" y="{leg_y2}" font-size="12" fill="{TEXT_SEC}">{label}</text>')
-        leg_x2 += 20 + 8 * len(label) + 22
+    # legend: subitem (color) -- may wrap to multiple rows (e.g.
+    # anomaly_detection's 10 calls); the layout-height computation above
+    # already reserved room for however many rows this takes.
+    entries = [
+        (lambda cx, cy, c=subitem_colors[k]: marker_svg("circle", cx, cy, c),
+         op_call_label(k[0], k[1], compact_labels))
+        for k in subitems
+    ]
+    legend2_svg, _legend2_end_y = render_legend_row(entries, ML, legend2Y, W - 20, TEXT_SEC)
+    svg.extend(legend2_svg)
 
     svg.append(f'<text x="{ML}" y="{footnoteY}" font-size="10.5" fill="{TEXT_MUTED}">'
                'Gray dashed lines: idealized 1-vector-MAC-instr/cycle ceiling (too optimistic). '
