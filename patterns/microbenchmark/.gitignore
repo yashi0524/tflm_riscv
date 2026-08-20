@@ -1,5 +1,7 @@
 # Build artifacts (see int8dot_ceiling.c's header comment for build commands,
 # or just `make run` / `make run TOOLCHAIN_ROOT=../script/clang_wrapper/`) --
-# both benchmarks' .o/binaries/m5out* land entirely under these two dirs.
+# all four probes' .o/binaries/m5out* land entirely under these four dirs.
 int8dot_ceiling/
 fc_bottleneck/
+int8dot_correctness_probe/
+requant_correctness_probe/

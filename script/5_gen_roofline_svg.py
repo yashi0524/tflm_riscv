@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Generate the static roofline SVG for doc/performance_dtln.md, parsing
-analysis/roofline_log.txt instead of hardcoding the data points -- unlike
+"""Generate the static roofline SVG for doc/dtln/performance_dtln.md, parsing
+doc/dtln/roofline_log.txt instead of hardcoding the data points -- unlike
 the sibling gemm project's script/gen_roofline_svg.py (which hand-codes a
 SERIES/POINTS table refreshed by copy-paste after each sweep), this one
 reads script/4_roofline_report.py's own output directly, so re-running
@@ -18,7 +18,7 @@ Usage:
       --log /path/to/other_roofline_log.txt --out /path/to/out.svg
 
 To refresh after a new run: `python3 script/4_roofline_report.py` (writes
-analysis/roofline_log.txt), then this script -- no data to hand-edit.
+doc/dtln/roofline_log.txt), then this script -- no data to hand-edit.
 """
 import argparse
 import math
@@ -28,14 +28,14 @@ import sys
 from collections import defaultdict
 
 PROJECT_ROOT = "/home/ajno5/work/2_pattern/tflm"
-DEFAULT_LOG = os.path.join(PROJECT_ROOT, "analysis", "roofline_log.txt")
-DEFAULT_OUT = os.path.join(PROJECT_ROOT, "doc", "dtln_roofline.svg")
+DEFAULT_LOG = os.path.join(PROJECT_ROOT, "doc", "dtln", "roofline_log.txt")
+DEFAULT_OUT = os.path.join(PROJECT_ROOT, "doc", "dtln", "dtln_roofline.svg")
 
 TABLE_ROW_RE = re.compile(r"^\|(.+)\|\s*$")
 
 
 # ---------------------------------------------------------------------------
-# Parse analysis/roofline_log.txt (script/4_roofline_report.py's output).
+# Parse doc/dtln/roofline_log.txt (script/4_roofline_report.py's output).
 # ---------------------------------------------------------------------------
 
 
@@ -75,6 +75,9 @@ def parse_report(log_path):
         lines = f.read().splitlines()
 
     meta = {}
+    m = re.search(r"^Model: (\S+)$", "\n".join(lines), re.MULTILINE)
+    if m:
+        meta["model_name"] = os.path.splitext(os.path.basename(m.group(1)))[0]
     m = re.search(r"peak BW ([\d.]+) GB/s", "\n".join(lines))
     if m:
         meta["peak_bw_gbps"] = float(m.group(1))
@@ -193,7 +196,7 @@ JITTER_PX = 9
 def compute_x_jitter(points):
     """dtln's FULLY_CONNECTED and both UNIDIRECTIONAL_SEQUENCE_LSTM calls
     all land at exactly the same AI (2.00 FLOP/byte -- see
-    doc/performance_dtln.md's "Arithmetic intensity" table, not a
+    doc/dtln/performance_dtln.md's "Arithmetic intensity" table, not a
     coincidence: every one of these is a batch-1 int8 GEMV with zero
     weight reuse). Plotted at their true x they'd stack directly on top of
     each other and the later-drawn marker would fully hide the earlier one
@@ -251,7 +254,7 @@ def render_svg(meta, points):
     # Cold-cache ridge point: where the memory roof crosses the cold-cache
     # ceiling instead of the warm one -- the ridge point that matters for
     # this project's *actual* single-shot workload (see "Second
-    # correction" in doc/performance_dtln.md). Lower than ridge_measured,
+    # correction" in doc/dtln/performance_dtln.md). Lower than ridge_measured,
     # since the cold ceiling itself is lower.
     ridge_cold = cold_ceiling / peak_bw if peak_bw and cold_ceiling else None
 
@@ -297,7 +300,8 @@ def render_svg(meta, points):
     svg = []
     svg.append(f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" font-family="Helvetica, Arial, sans-serif">')
     svg.append(f'<rect x="0" y="0" width="{W}" height="{H}" fill="#ffffff"/>')
-    svg.append(f'<text x="{ML}" y="22" font-size="15" fill="{TEXT_PRI}" font-weight="700">dtln roofline: scalar vs. vectorized vs. warm/fc-warm/cold-cache ceilings</text>')
+    model_name = meta.get("model_name", "model")
+    svg.append(f'<text x="{ML}" y="22" font-size="15" fill="{TEXT_PRI}" font-weight="700">{model_name} roofline: scalar vs. vectorized vs. warm/fc-warm/cold-cache ceilings</text>')
 
     for v in x_ticks:
         x = px(v)
@@ -358,7 +362,7 @@ def render_svg(meta, points):
     # Ridge point vs. the *cold-cache* ceiling -- the ridge point that
     # matters for this project's actual achieved-performance points below,
     # since dtln_test's single Invoke() call never gets a warm cache (see
-    # "Second correction" in doc/performance_dtln.md). Styled purple to
+    # "Second correction" in doc/dtln/performance_dtln.md). Styled purple to
     # stay visually distinct from the warm-measured blue and idealized
     # gray lines while still reading as "the important one" (bold, solid
     # dot) rather than the idealized line's muted treatment.
@@ -415,7 +419,7 @@ def render_svg(meta, points):
     # this project's achieved-performance points below, since dtln_test's
     # single Invoke() call never gets a warm cache. Solid, not dashed, and
     # drawn last (on top) to read as the authoritative line -- see "Second
-    # correction" in doc/performance_dtln.md.
+    # correction" in doc/dtln/performance_dtln.md.
     if cold_ceiling and y_dom[0] <= cold_ceiling <= y_dom[1]:
         y = py(cold_ceiling)
         svg.append(f'<line x1="{ML}" y1="{y:.1f}" x2="{ML+plotW}" y2="{y:.1f}" stroke="#7c5cbf" '
@@ -459,10 +463,10 @@ def render_svg(meta, points):
                'Blue dashed lines: warm-cache FU ceiling (int8dot_ceiling.c -- correct FU throughput, but data is never actually this cached).</text>')
     svg.append(f'<text x="{ML}" y="{footnote2Y}" font-size="10.5" fill="{TEXT_MUTED}">'
                'Amber dashed lines: fc_bottleneck.c warm-cache ceiling (FC_CACHE_MODE=0) -- same op/shape/pass-count as the purple cold-cache line, differing only in cache state. '
-               'Purple solid line: cold-cache ceiling (FC_CACHE_MODE=1) -- the ceiling that actually applies here, since dtln_test reads every weight tensor exactly once, never cached.</text>')
+               f'Purple solid line: cold-cache ceiling (FC_CACHE_MODE=1) -- the ceiling that actually applies here, since {model_name}\'s single Invoke() call reads every weight tensor exactly once, never cached.</text>')
     svg.append(f'<text x="{ML}" y="{footnote3Y}" font-size="10.5" fill="{TEXT_MUTED}">'
                'Points nudged a few px apart within each arithmetic-intensity cluster for legibility -- '
-               'FULLY_CONNECTED and both LSTM calls share the exact same AI (2.00 FLOP/byte).</text>')
+               'every batch-1 FULLY_CONNECTED/LSTM call shares the exact same AI (2.00 FLOP/byte).</text>')
 
     svg.append('</svg>')
     return "\n".join(svg)

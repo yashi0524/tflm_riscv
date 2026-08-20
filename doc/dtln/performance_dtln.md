@@ -6,13 +6,14 @@
 - [Vectorized `FULLY_CONNECTED` and LSTM (`riscv64_baremetal_vector`) vs. scalar baseline](#vectorized-fully_connected-and-lstm-riscv64_baremetal_vector-vs-scalar-baseline)
 - [Roofline analysis](#roofline-analysis)
   - [Machine parameters](#machine-parameters)
+  - [Microbenchmark build settings](#microbenchmark-build-settings)
   - [Arithmetic intensity](#arithmetic-intensity)
   - [Achieved performance vs. the roofline (gem5, cycle-accurate)](#achieved-performance-vs-the-roofline-gem5-cycle-accurate)
 - [Benchmark candidate comparison (FC/Conv layer shapes)](#benchmark-candidate-comparison-fcconv-layer-shapes)
 - [Reproducing](#reproducing)
 
 Deep-dive performance analysis for `dtln_noise_suppression.tflite`, split
-out of [`performance.md`](performance.md) (which stays the consolidated
+out of [`performance.md`](../performance.md) (which stays the consolidated
 whole-run log across every benchmark in this project — `dtln_test` is just
 one row there). This file covers everything specific to `dtln`: real
 per-op cycle counts, the vectorized `FULLY_CONNECTED` **and** LSTM kernels
@@ -24,7 +25,7 @@ picked as the standing benchmark target in the first place.
 the project default as of the LSTM vectorization fix below — GCC 13.2.0-2
 (the previous default, still installed alongside it) miscompiles the fixed
 `Int8DotProductRvv` at `-O2`. See "LSTM vectorization" in
-[`gem5_integration.md`](gem5_integration.md) for the full story.
+[`gem5_integration.md`](../gem5_integration.md) for the full story.
 
 **Same caveat as `performance.md`'s intro applies:** TFLM's per-op software
 timing instrumentation isn't wired up by default — every op prints `0
@@ -38,7 +39,7 @@ directly — see the callout in "Vectorized `FULLY_CONNECTED`" below for why.
 ## Per-op cycle counts: `dtln_noise_suppression.tflite` on `riscv64_baremetal`
 
 Real per-op profiling, not `0 ticks` — see "Per-op cycle counts on
-`riscv64_baremetal`" in [`gem5_integration.md`](gem5_integration.md) for
+`riscv64_baremetal`" in [`gem5_integration.md`](../gem5_integration.md) for
 how (`micro_time.cc` reading `mcycle`, plus running via
 `run_tflm_benchmark` instead of `dtln_test` directly, since only the
 former wires a `MicroProfiler`). `GENERIC_BENCHMARK_ARENA_SIZE=16384`.
@@ -68,7 +69,7 @@ path yet — deliberately skipped given its ~7–9 minute gem5 wall-clock cost.
 ## Vectorized `FULLY_CONNECTED` and LSTM (`riscv64_baremetal_vector`) vs. scalar baseline
 
 See "A vectorized `FULLY_CONNECTED` kernel" and "LSTM vectorization" in
-[`gem5_integration.md`](gem5_integration.md) for the full implementation
+[`gem5_integration.md`](../gem5_integration.md) for the full implementation
 history, including two real correctness bugs found/fixed along the way:
 (1) an `if constexpr` type guard that didn't check `OutputType`, which let
 the fast path incorrectly apply to `lstm_eval.cc`'s internal `int16_t`
@@ -115,7 +116,7 @@ one above:
   e16m4 -> e32m8`, the widest feasible for this double-widening chain)
   after measuring 25-34% fewer cycles at `accum_depth >= 128` on a
   standalone probe — see "`Int8DotProductRvv`: widened from base `LMUL=1`
-  to `LMUL=2`" in [`gem5_integration.md`](gem5_integration.md) for the
+  to `LMUL=2`" in [`gem5_integration.md`](../gem5_integration.md) for the
   shape-by-shape breakdown (small `accum_depth <= 28` sees a small ~4%
   *regression*, accepted since dtln's own shapes are all `>= 128`).
 - `MultiplyByQuantizedMultiplier` (the int32 requantize step) was
@@ -125,7 +126,7 @@ one above:
   **29.34% whole-model cycle reduction** on its own (`FULLY_CONNECTED`
   alone: -34.93%), the single largest optimization found in this project.
   See "Realistic FULLY_CONNECTED bottleneck decomposition" in
-  [`gem5_integration.md`](gem5_integration.md) for the full writeup —
+  [`gem5_integration.md`](../gem5_integration.md) for the full writeup —
   including the standalone-benchmark investigation that led to finding it.
 
 Whole-model effect — now both `FULLY_CONNECTED` **and** the LSTM
@@ -175,7 +176,7 @@ silently linking stale objects).
 > (`generic_model_benchmark.cc`) is the one harness that wires a real
 > `MicroProfiler` into the interpreter, which is where every per-op number
 > in this section (and the roofline's achieved-performance points) comes
-> from — see [`script/2_run_benchmark.sh`](../script/2_run_benchmark.sh)
+> from — see [`script/2_run_benchmark.sh`](../../script/2_run_benchmark.sh)
 > (or the `/run_benchmark_tflm` command, which defaults to this target).
 
 ```bash
@@ -188,7 +189,7 @@ make -f tensorflow/lite/micro/tools/make/Makefile TARGET=riscv64_baremetal_vecto
 ## Roofline analysis
 
 Shapes pulled straight from the `.tflite` flatbuffer via
-[`script/3_extract_lstm_shapes.py`](../script/3_extract_lstm_shapes.py) (same
+[`script/3_extract_lstm_shapes.py`](../../script/3_extract_lstm_shapes.py) (same
 technique as the "Benchmark candidate comparison" table below, extended to
 `UNIDIRECTIONAL_SEQUENCE_LSTM`'s 24 fixed input operand slots — gate
 weights/biases/state/peephole/projection/layer-norm — instead of
@@ -215,7 +216,7 @@ Same board as the sibling `gemm` project's
   functional unit (6-cycle result latency, in-order pipeline, no
   out-of-order execution to hide dependency-chain stalls — see "Why
   efficiency stays low even after vectorization" in
-  [`gem5_integration.md`](gem5_integration.md)) that throttles achievable
+  [`gem5_integration.md`](../gem5_integration.md)) that throttles achievable
   throughput to something far below either this idealized figure or what
   DRAM could sustain, for this kernel's specific instruction mix. Standard
   roofline analysis (compute ceiling vs. memory-bandwidth ceiling) doesn't
@@ -225,7 +226,7 @@ Same board as the sibling `gemm` project's
 - **Measured the real compute ceiling empirically instead of assuming
   it** — same methodology the sibling `gemm` project uses for its own
   `fmacc.c` compute roof (measure, don't assume): built
-  [`../microbenchmark/int8dot_ceiling.c`](../microbenchmark/int8dot_ceiling.c),
+  [`../../patterns/microbenchmark/int8dot_ceiling.c`](../../patterns/microbenchmark/int8dot_ceiling.c),
   an independent-3-chain-unrolled microbenchmark replicating
   `Int8DotProductRvv`'s actual instruction sequence (`vle8` → `vwadd` ×2 →
   `vwmul` → `vredsum`, `LMUL=2`) with enough parallel chains to overlap the
@@ -250,6 +251,25 @@ Same board as the sibling `gemm` project's
   actually matters: an op only needs `AI` above ~0.29 FLOP/byte to be
   compute-bound against what this CPU can genuinely sustain, a dramatically
   lower bar than the idealized 10 FLOP/byte figure suggests.
+
+### Microbenchmark build settings
+
+All three ceilings above (warm, fc warm, cold) come from
+[`../../patterns/microbenchmark/`](../../patterns/microbenchmark/), built
+standalone against `riscv64_baremetal_vector`'s own crt0/linker script
+directly — no TFLM library build needed, so these numbers are
+reproducible independent of the rest of this file's `run_tflm_benchmark`
+pipeline. Full build settings, test config (`FC_VARIANT`/`FC_CACHE_MODE`
+meanings), and results (including the full 5-variant warm-vs-cold table)
+now live in **[`../microbenchmark/README.md`](../microbenchmark/README.md)**
+— written as a shared reference so other patterns needing their own
+ceiling probe (a different FC/GEMV shape, say) can build against the same
+settings without duplicating them here. Quick summary: `make run` (warm,
+`int8dot_ceiling.c`), `make run-fc-warm-ceiling` / `make run-cold-ceiling`
+(fc warm / cold, `fc_bottleneck.c` `FC_VARIANT=4`) — all three are what
+`script/4_roofline_report.py --measure-ceiling --measure-fc-warm-ceiling
+--measure-cold-ceiling` invokes directly, rather than trusting the
+hardcoded defaults.
 
 ### Arithmetic intensity
 
@@ -305,9 +325,9 @@ project's kernels are.
 
 ![dtln roofline: scalar vs. vectorized FULLY_CONNECTED/LSTM vs. measured FU ceiling](dtln_roofline.svg)
 
-Generated by [`../script/5_gen_roofline_svg.py`](../script/5_gen_roofline_svg.py)
-from [`../analysis/roofline_log.txt`](../analysis/roofline_log.txt) (itself
-produced by [`../script/4_roofline_report.py`](../script/4_roofline_report.py)
+Generated by [`../../script/5_gen_roofline_svg.py`](../../script/5_gen_roofline_svg.py)
+from [`roofline_log.txt`](roofline_log.txt) (itself
+produced by [`../../script/4_roofline_report.py`](../../script/4_roofline_report.py)
 — see that script's docstring for what each of the three ridge points and
 three ceilings mean; the blue/amber/purple ones are the ones that matter
 for this project, the gray ones are the naive/idealized figures kept for
@@ -357,7 +377,7 @@ cycles/channel for the dot product alone) and by reproducing the same
 cold condition in a formalized `fc_bottleneck.c` mode
 (`FC_CACHE_MODE=1`, `DOT_ONLY`: 200 cycles/channel, within 2%) — see
 "Realistic FULLY_CONNECTED bottleneck decomposition" in
-[`gem5_integration.md`](gem5_integration.md) for the full derivation,
+[`gem5_integration.md`](../gem5_integration.md) for the full derivation,
 including confirming a 16x larger L1 changes nothing (the miss is
 compulsory, not capacity-bound).
 
@@ -418,7 +438,7 @@ afterward. The qualitative conclusions below — 2-wide issue width caps FU
 count, real kernel doesn't reach the isolated probe's ceiling — are
 unaffected; only the absolute baseline they're measured against has since
 moved.) Investigated precisely why — see "Why efficiency stays low even after
-vectorization" in [`gem5_integration.md`](gem5_integration.md): every
+vectorization" in [`gem5_integration.md`](../gem5_integration.md): every
 vector instruction (`vwadd`/`vwmul`/`vredsum`/`vwredsum` alike) competes
 for exactly one functional unit with 6-cycle result latency, and
 `MinorCPU`'s in-order pipeline has no out-of-order execution to hide that
@@ -463,7 +483,7 @@ row-sum once per `Invoke()` instead of every call remains untried (see
 a genuine correctness bug in `Int8DotProductRvv` (an offset-value-`128`
 truncation, latent in the FC kernel too) plus a GCC 13.2 `-O2` codegen bug
 — is now fixed. See "LSTM vectorization" in
-[`gem5_integration.md`](gem5_integration.md) for the full root-cause
+[`gem5_integration.md`](../gem5_integration.md) for the full root-cause
 writeup, the fix, the GCC 13.4.0-1 toolchain upgrade that unblocked it,
 and cross-shape validation against 3 other models.
 

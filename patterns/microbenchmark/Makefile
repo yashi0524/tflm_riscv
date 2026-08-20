@@ -12,19 +12,19 @@
 #                         m5out_fc_v*[_cold], and m5out_cold_ceiling
 #
 # Usage:
-#   source ../script/0_env_var_setup.sh
+#   source ../../script/0_env_var_setup.sh
 #   make run                                              # GCC 13.4.0-1 (default, authoritative -- see doc/gem5_integration.md)
-#   make run TOOLCHAIN_ROOT=../script/clang_wrapper/       # clang-18 cross-check
+#   make run TOOLCHAIN_ROOT=../../script/clang_wrapper/    # clang-18 cross-check
 #   make run-fc-bottleneck                                # builds+runs all 5 fc_bottleneck.c variants, warm cache (FC_CACHE_MODE=0)
 #   make run-fc-bottleneck-cold                            # same 5 variants, cold cache (FC_CACHE_MODE=1) -- see fc_bottleneck.c's header comment
 #   make run-cold-ceiling                                  # single-binary version of the above's FC_VARIANT=4 cold run --
 #                                                           # what script/4_roofline_report.py's --measure-cold-ceiling invokes
 #   make clean
 
-TFLM_VEC_DIR := ../tflite-micro/tensorflow/lite/micro/riscv64_baremetal_vector
-SIM_CONFIG   := ../sim_config/gem5_riscv_baremetal_fs.py
+TFLM_VEC_DIR := ../../tflite-micro/tensorflow/lite/micro/riscv64_baremetal_vector
+SIM_CONFIG   := ../../sim_config/gem5_riscv_baremetal_fs.py
 
-# GCC by default; point at ../script/clang_wrapper/ to cross-check with
+# GCC by default; point at ../../script/clang_wrapper/ to cross-check with
 # clang-18 instead (that wrapper silently drops -mexplicit-relocs, so the
 # same flags below work unmodified against either toolchain).
 TOOLCHAIN_ROOT ?= $(TOOLCHAIN)/bin/
@@ -99,7 +99,44 @@ run-cold-ceiling: $(FC_DIR)/fc_bottleneck_riscv_v4_cold
 run-fc-warm-ceiling: $(FC_DIR)/fc_bottleneck_riscv_v4
 	gem5.opt -d $(FC_DIR)/m5out_fc_warm_ceiling $(SIM_CONFIG) ./$(FC_DIR)/fc_bottleneck_riscv_v4
 
-clean:
-	rm -rf $(INT8DOT_DIR) $(FC_DIR)
+# --- correctness regression probes (not ceilings -- standalone
+# cross-checks against a plain scalar reference, added while root-causing
+# the anomaly_detection_int8.tflite vectorized-output CRC32 mismatch, see
+# ../../doc/anomaly_detection/performance_anomaly_detection.md's
+# "Correctness" section and ../../doc/gem5_integration.md's "Known
+# limitations" ---
+INT8DOT_PROBE_DIR := int8dot_correctness_probe
+REQUANT_PROBE_DIR := requant_correctness_probe
 
-.PHONY: run run-fc-bottleneck run-fc-bottleneck-cold run-cold-ceiling run-fc-warm-ceiling clean
+$(INT8DOT_PROBE_DIR) $(REQUANT_PROBE_DIR):
+	mkdir -p $@
+
+$(INT8DOT_PROBE_DIR)/int8dot_correctness_probe_riscv: int8dot_correctness_probe.c $(TFLM_VEC_DIR)/start_semi.S $(TFLM_VEC_DIR)/linker_semi.ld | $(INT8DOT_PROBE_DIR)
+	$(CC) $(CFLAGS) -c int8dot_correctness_probe.c -o $(INT8DOT_PROBE_DIR)/int8dot_correctness_probe.o
+	$(CC) $(LDFLAGS) -o $@ $(TFLM_VEC_DIR)/start_semi.S $(INT8DOT_PROBE_DIR)/int8dot_correctness_probe.o \
+	  -Wl,--start-group -lc -lm -lgcc -Wl,--end-group
+
+# Int8DotProductRvv (the RVV dot product itself) vs. a plain int64_t
+# scalar reference, at every (K, input_offset) anomaly_detection_int8.tflite's
+# 10 FULLY_CONNECTED layers actually use, plus edge cases (K=1, VLMAX+/-1)
+# -- confirmed all-pass, ruling this function out as the bug source.
+run-int8dot-correctness: $(INT8DOT_PROBE_DIR)/int8dot_correctness_probe_riscv
+	gem5.opt -d $(INT8DOT_PROBE_DIR)/m5out $(SIM_CONFIG) ./$(INT8DOT_PROBE_DIR)/int8dot_correctness_probe_riscv
+
+$(REQUANT_PROBE_DIR)/requant_correctness_probe_riscv: requant_correctness_probe.c $(TFLM_VEC_DIR)/start_semi.S $(TFLM_VEC_DIR)/linker_semi.ld | $(REQUANT_PROBE_DIR)
+	$(CC) $(CFLAGS) -c requant_correctness_probe.c -o $(REQUANT_PROBE_DIR)/requant_correctness_probe.o
+	$(CC) $(LDFLAGS) -o $@ $(TFLM_VEC_DIR)/start_semi.S $(REQUANT_PROBE_DIR)/requant_correctness_probe.o \
+	  -Wl,--start-group -lc -lm -lgcc -Wl,--end-group
+
+# MultiplyByQuantizedMultiplierInlined's single-rounding algorithm vs.
+# common.cc's actual (double-rounding, TFLITE_SINGLE_ROUNDING unset)
+# algorithm, at anomaly_detection_int8.tflite's 10 real (multiplier,
+# shift) pairs -- this is the confirmed root cause of the CRC32 mismatch.
+run-requant-correctness: $(REQUANT_PROBE_DIR)/requant_correctness_probe_riscv
+	gem5.opt -d $(REQUANT_PROBE_DIR)/m5out $(SIM_CONFIG) ./$(REQUANT_PROBE_DIR)/requant_correctness_probe_riscv
+
+clean:
+	rm -rf $(INT8DOT_DIR) $(FC_DIR) $(INT8DOT_PROBE_DIR) $(REQUANT_PROBE_DIR)
+
+.PHONY: run run-fc-bottleneck run-fc-bottleneck-cold run-cold-ceiling run-fc-warm-ceiling \
+	run-int8dot-correctness run-requant-correctness clean

@@ -998,7 +998,7 @@ cycle-accurate memory/pipeline model).
 
 **Project toolchain default switched to GCC 13.4.0-1** (`script/
 0_env_var_setup.sh`, `script/1_run_pattern.sh`, `script/2_run_benchmark.sh`,
-and `performance.md`/`performance_dtln.md`'s `Reproducing` commands — the
+and `performance.md`/`dtln/performance_dtln.md`'s `Reproducing` commands — the
 `TARGET_TOOLCHAIN_ROOT=...13.2.0-2...` examples earlier in *this* doc are
 untouched, since they're historical record of what was actually run for
 those earlier, unrelated fixes, and remain reproducible either way since
@@ -1011,7 +1011,7 @@ project turns out to depend on the exact older version.
 
 Follow-up after the correctness fix above: with `Int8DotProductRvv`
 correct, checked whether wider `LMUL` closes any of the gap to the
-roofline's peak-compute ceiling (`performance_dtln.md`'s "Achieved
+roofline's peak-compute ceiling (`dtln/performance_dtln.md`'s "Achieved
 performance" table still showed only ~2.3-2.9% efficiency post-fix).
 `e8m2 -> e16m4 -> e32m8` is the widest feasible base LMUL for this
 double-widening chain — a third step (base `m4`) would need `m16` for the
@@ -1032,7 +1032,7 @@ regression on the other models' already-cheap small-K gates was accepted
 rather than adding branch complexity to the hot path. Re-validated against
 all 4 models from the correctness-fix validation above (dtln, `mnist_lstm`,
 `micro_speech_quantized`, `hello_world_int8`) — all CRC32s still match.
-See `performance_dtln.md` for the resulting cycle counts.
+See `dtln/performance_dtln.md` for the resulting cycle counts.
 
 Also tried accumulating the widening-multiply's result in a *vector*
 register across loop iterations (instead of a full horizontal `vredsum`
@@ -1141,9 +1141,12 @@ core can actually saturate DRAM; `MinorCPU`'s single-`FloatSimd`-FU
 bottleneck above means it structurally can't, for this instruction mix.
 Rather than derive a corrected ceiling analytically, measured it directly
 — same "measure, don't assume" methodology the sibling `gemm` project
-uses for its own `fmacc.c` compute roof.
+uses for its own `fmacc.c` compute roof. (Build settings, test config, and
+current results for both probes below are collected in
+[`microbenchmark/README.md`](microbenchmark/README.md) — this section is
+the "how we got here" story, that one's the reusable reference.)
 
-**[`microbenchmark/int8dot_ceiling.c`](../microbenchmark/int8dot_ceiling.c)**
+**[`microbenchmark/int8dot_ceiling.c`](../patterns/microbenchmark/int8dot_ceiling.c)**
 replicates `Int8DotProductRvv`'s actual instruction sequence (`vle8` →
 `vwadd` ×2 → `vwmul` → `vredsum`, `LMUL=2`) across `N` independent chains,
 hand-interleaved (all loads, then all widens, then all multiplies, then
@@ -1171,7 +1174,7 @@ chain count that fits cleanly at this `LMUL`.
 
 **Result — GCC 13.4.0-1, gem5 (cycle-accurate): 206 cycles/iteration,
 3.723 GFLOP/s.** This is the authoritative figure used in
-`performance_dtln.md`'s roofline efficiency table, since the project's
+`dtln/performance_dtln.md`'s roofline efficiency table, since the project's
 actual kernel is GCC-built. Cross-checked against clang-18 for the same
 source (see "Investigating clang as an alternative toolchain" below):
 278 cycles/iteration, 2.760 GFLOP/s — same order of magnitude (confirms
@@ -1185,7 +1188,7 @@ Against this real, measured ceiling instead of the wrong `25.6 GFLOP/s`
 figure, the vectorized kernel's efficiency comes out to ~18-21% (was
 ~2.6-3.1% against the wrong ceiling) — meaning it's already within ~5× of
 what this CPU can genuinely sustain for this op mix, not 30-40× short of
-it. See `performance_dtln.md`'s "Achieved performance vs. the roofline"
+it. See `dtln/performance_dtln.md`'s "Achieved performance vs. the roofline"
 section for the full corrected table and comparison against the sibling
 `gemm` project's own efficiency findings.
 
@@ -1320,7 +1323,7 @@ been explaining the real kernel's weak FU-count/interleaving payoff by
 pointing at scalar post-processing — bias add, requantization, activation
 clamping — as "a lot that never touches the `FloatSimd` FU." That claim
 was never actually *measured*, just asserted from first principles. Built
-[`../microbenchmark/fc_bottleneck.c`](../microbenchmark/fc_bottleneck.c)
+[`../patterns/microbenchmark/fc_bottleneck.c`](../patterns/microbenchmark/fc_bottleneck.c)
 to check it directly, at `dtln`'s real FC shape (`M=1,K=128,N=257`) and
 real quantization params (pulled from the flatbuffer, not guessed:
 `input_offset=4`, `filter_offset=0`, `output_offset=-2`,
@@ -1451,10 +1454,11 @@ same run; this access pattern has zero reuse within a single inference,
 so no plausible L1 size changes anything here.
 
 **Formalized as a permanent `FC_CACHE_MODE` build flag** (`0`=warm,
-`1`=cold — see `fc_bottleneck.c`'s header comment) instead of leaving
-this as a one-off scratch-copy experiment, so both ceilings are
-reproducible directly: `make run-fc-bottleneck` /
-`make run-fc-bottleneck-cold`.
+`1`=cold — see `fc_bottleneck.c`'s header comment, or
+[`microbenchmark/README.md`](microbenchmark/README.md)'s "Test config" for
+the short version) instead of leaving this as a one-off scratch-copy
+experiment, so both ceilings are reproducible directly: `make
+run-fc-bottleneck` / `make run-fc-bottleneck-cold`.
 
 **Follow-up (2026-08-19, same day): unified `FC_ITERS=1` for both cache
 modes.** The table below originally came from a WARM build that still
@@ -1589,7 +1593,7 @@ unlike the RVV path's tight ~8-instruction vector chain), bloating that
 function's code size enough to cause real I-cache pressure on gem5's
 64 kB 4-way L1 — not confirmed further, since the fix (below) resolved
 it without needing to. This mattered a lot: every "vectorized speedup vs.
-scalar baseline" number in `performance_dtln.md` depends on the scalar
+scalar baseline" number in `dtln/performance_dtln.md` depends on the scalar
 baseline staying exactly as it was, so an inflated scalar denominator
 would have silently made every speedup number in this project look
 better than it really is. Fixed by scoping the inlined version to
@@ -1813,6 +1817,59 @@ broken.
 
 ## Known limitations / follow-ups not yet done
 
+- **Root-caused (2026-08-20), not yet fixed: `MultiplyByQuantizedMultiplierInlined`
+  (the RVV-only requantize copy in `fully_connected.h`) uses the wrong
+  rounding algorithm for this build, corrupting vectorized `FULLY_CONNECTED`/
+  LSTM output by ±1 on a data-dependent fraction of values.** Found via
+  `anomaly_detection_int8.tflite` (MLPerf Tiny `ad01`), whose output CRC32
+  doesn't match scalar (`0xC6F70B6E` vs `0xFA7AD6B9`, reproduced twice) —
+  but the bug itself is model-independent, latent in every RVV
+  `FULLY_CONNECTED`/LSTM call in this project, including `dtln`'s (just
+  not yet observed to flip a final CRC32 there). `common.cc` has two
+  `MultiplyByQuantizedMultiplier` implementations gated by `#if
+  TFLITE_SINGLE_ROUNDING`: single-rounding (shift-based) when defined
+  truthy, double-rounding (`gemmlowp::SaturatingRoundingDoublingHighMul` +
+  `RoundingDivideByPOT`) otherwise -- the default, and confirmed (grepped
+  the whole `tools/make/` tree) this project's build never defines
+  `TFLITE_SINGLE_ROUNDING`. `MultiplyByQuantizedMultiplierInlined`
+  hardcodes single-rounding *unconditionally*, contradicting its own
+  header comment's claim of being "byte-for-byte unchanged from the
+  shared version." Confirmed and quantified with a standalone probe
+  (`microbenchmark/requant_correctness_probe.c`) reimplementing both
+  algorithms and sweeping `anomaly_detection_int8.tflite`'s own 10 real
+  `(multiplier, shift)` pairs against 2000 accumulator values each:
+  455/20,000 mismatches, every one off by exactly `±1` (the textbook
+  single-vs-double-rounding divergence, not a magnitude bug), 0.1%-12.1%
+  per layer depending on its own multiplier/shift. Over 10 sequential
+  layers this compounds into a guaranteed-different final result,
+  matching the observed CRC32 mismatch. `Int8DotProductRvv` itself was
+  separately verified correct at every shape/offset this model uses
+  (`microbenchmark/int8dot_correctness_probe.c`, 10/10 passed) — ruling
+  out an earlier `K=8`/`K=640` shape hypothesis; the bug is entirely in
+  the requantize step. Fix not yet applied — see "Correctness" in
+  [`anomaly_detection/performance_anomaly_detection.md`](anomaly_detection/performance_anomaly_detection.md)
+  for the full writeup, including why this does *not* explain the
+  separate >100%-cold-ceiling-efficiency anomaly below (a rounding-value
+  bug changes results, not cycle counts).
+- **Open (2026-08-20): vectorized `FULLY_CONNECTED` now measures 41,373
+  cycles on `riscv64_baremetal_vector`, down from the 54,695 recorded a
+  few sessions earlier — and 41,373 pushes efficiency to 124% of the
+  `fc_bottleneck.c` `DOT_ONLY` cold-cache ceiling, which shouldn't be
+  possible (the real kernel does strictly more work than the isolated
+  dot product alone).** Confirmed genuine, not a measurement artifact:
+  reproduced identically across 4 independent checks (before/after a
+  full `rm -rf` of the entire `riscv64_baremetal_vector` gen tree, the
+  raw `MicroProfiler` log directly, and the roofline report), `git diff`
+  on `tflite-micro` shows zero kernel-source changes, toolchain confirmed
+  unchanged (GCC 13.4.0-1), and output CRC32 still matches the known-good
+  value (correctness unaffected). Best guess: the earlier 54,695 was
+  itself a stale incremental-build artifact from Make's timestamp-based
+  staleness tracking missing a real invalidation somewhere across many
+  prior sessions' builds, not a regression from 41,373. Not root-caused
+  further — doing so would need the same register-allocation/scheduling
+  instrumentation as "Realistic `FULLY_CONNECTED` bottleneck
+  decomposition" above, comparing the real kernel's inlined dot-product
+  call against `fc_bottleneck.c`'s isolated one directly.
 - A previously-suspected register-spill bug in the real `FullyConnected()`'s
   per-channel loop was investigated and ruled out, and the 2.581 vs. 1.203
   GFLOP/s gap against `microbenchmark/fc_bottleneck.c` that motivated it

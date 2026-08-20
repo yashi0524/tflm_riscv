@@ -1,0 +1,133 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 642" font-family="Helvetica, Arial, sans-serif">
+<rect x="0" y="0" width="900" height="642" fill="#ffffff"/>
+<text x="78" y="22" font-size="15" fill="#111111" font-weight="700">anomaly_detection_int8 roofline: scalar vs. vectorized vs. warm/fc-warm/cold-cache ceilings</text>
+<line x1="78.2" y1="40" x2="78.2" y2="480" stroke="#e4e3dd" stroke-width="1"/>
+<text x="78.2" y="500" font-size="12" fill="#767671" text-anchor="middle">0.05</text>
+<line x1="148.9" y1="40" x2="148.9" y2="480" stroke="#e4e3dd" stroke-width="1"/>
+<text x="148.9" y="500" font-size="12" fill="#767671" text-anchor="middle">0.1</text>
+<line x1="219.7" y1="40" x2="219.7" y2="480" stroke="#e4e3dd" stroke-width="1"/>
+<text x="219.7" y="500" font-size="12" fill="#767671" text-anchor="middle">0.2</text>
+<line x1="261.1" y1="40" x2="261.1" y2="480" stroke="#e4e3dd" stroke-width="1"/>
+<text x="261.1" y="500" font-size="12" fill="#767671" text-anchor="middle">0.3</text>
+<line x1="313.3" y1="40" x2="313.3" y2="480" stroke="#e4e3dd" stroke-width="1"/>
+<text x="313.3" y="500" font-size="12" fill="#767671" text-anchor="middle">0.5</text>
+<line x1="384.1" y1="40" x2="384.1" y2="480" stroke="#e4e3dd" stroke-width="1"/>
+<text x="384.1" y="500" font-size="12" fill="#767671" text-anchor="middle">1</text>
+<line x1="454.9" y1="40" x2="454.9" y2="480" stroke="#e4e3dd" stroke-width="1"/>
+<text x="454.9" y="500" font-size="12" fill="#767671" text-anchor="middle">2</text>
+<line x1="496.3" y1="40" x2="496.3" y2="480" stroke="#e4e3dd" stroke-width="1"/>
+<text x="496.3" y="500" font-size="12" fill="#767671" text-anchor="middle">3</text>
+<line x1="548.4" y1="40" x2="548.4" y2="480" stroke="#e4e3dd" stroke-width="1"/>
+<text x="548.4" y="500" font-size="12" fill="#767671" text-anchor="middle">5</text>
+<line x1="619.2" y1="40" x2="619.2" y2="480" stroke="#e4e3dd" stroke-width="1"/>
+<text x="619.2" y="500" font-size="12" fill="#767671" text-anchor="middle">10</text>
+<line x1="690.0" y1="40" x2="690.0" y2="480" stroke="#e4e3dd" stroke-width="1"/>
+<text x="690.0" y="500" font-size="12" fill="#767671" text-anchor="middle">20</text>
+<line x1="78" y1="480.0" x2="690" y2="480.0" stroke="#e4e3dd" stroke-width="1"/>
+<text x="68" y="484.0" font-size="12" fill="#767671" text-anchor="end">0.03</text>
+<line x1="78" y1="455.2" x2="690" y2="455.2" stroke="#e4e3dd" stroke-width="1"/>
+<text x="68" y="459.2" font-size="12" fill="#767671" text-anchor="end">0.05</text>
+<line x1="78" y1="421.5" x2="690" y2="421.5" stroke="#e4e3dd" stroke-width="1"/>
+<text x="68" y="425.5" font-size="12" fill="#767671" text-anchor="end">0.1</text>
+<line x1="78" y1="387.8" x2="690" y2="387.8" stroke="#e4e3dd" stroke-width="1"/>
+<text x="68" y="391.8" font-size="12" fill="#767671" text-anchor="end">0.2</text>
+<line x1="78" y1="368.1" x2="690" y2="368.1" stroke="#e4e3dd" stroke-width="1"/>
+<text x="68" y="372.1" font-size="12" fill="#767671" text-anchor="end">0.3</text>
+<line x1="78" y1="343.2" x2="690" y2="343.2" stroke="#e4e3dd" stroke-width="1"/>
+<text x="68" y="347.2" font-size="12" fill="#767671" text-anchor="end">0.5</text>
+<line x1="78" y1="309.5" x2="690" y2="309.5" stroke="#e4e3dd" stroke-width="1"/>
+<text x="68" y="313.5" font-size="12" fill="#767671" text-anchor="end">1</text>
+<line x1="78" y1="275.9" x2="690" y2="275.9" stroke="#e4e3dd" stroke-width="1"/>
+<text x="68" y="279.9" font-size="12" fill="#767671" text-anchor="end">2</text>
+<line x1="78" y1="256.1" x2="690" y2="256.1" stroke="#e4e3dd" stroke-width="1"/>
+<text x="68" y="260.1" font-size="12" fill="#767671" text-anchor="end">3</text>
+<line x1="78" y1="231.3" x2="690" y2="231.3" stroke="#e4e3dd" stroke-width="1"/>
+<text x="68" y="235.3" font-size="12" fill="#767671" text-anchor="end">5</text>
+<line x1="78" y1="197.6" x2="690" y2="197.6" stroke="#e4e3dd" stroke-width="1"/>
+<text x="68" y="201.6" font-size="12" fill="#767671" text-anchor="end">10</text>
+<line x1="78" y1="163.9" x2="690" y2="163.9" stroke="#e4e3dd" stroke-width="1"/>
+<text x="68" y="167.9" font-size="12" fill="#767671" text-anchor="end">20</text>
+<line x1="78" y1="144.2" x2="690" y2="144.2" stroke="#e4e3dd" stroke-width="1"/>
+<text x="68" y="148.2" font-size="12" fill="#767671" text-anchor="end">30</text>
+<line x1="78" y1="119.4" x2="690" y2="119.4" stroke="#e4e3dd" stroke-width="1"/>
+<text x="68" y="123.4" font-size="12" fill="#767671" text-anchor="end">50</text>
+<line x1="78" y1="85.7" x2="690" y2="85.7" stroke="#e4e3dd" stroke-width="1"/>
+<text x="68" y="89.7" font-size="12" fill="#767671" text-anchor="end">100</text>
+<line x1="78" y1="52.0" x2="690" y2="52.0" stroke="#e4e3dd" stroke-width="1"/>
+<text x="68" y="56.0" font-size="12" fill="#767671" text-anchor="end">200</text>
+<line x1="78" y1="480" x2="690" y2="480" stroke="#b9b8b1" stroke-width="1"/>
+<line x1="78" y1="40" x2="78" y2="480" stroke="#b9b8b1" stroke-width="1"/>
+<text x="384.0" y="520" font-size="13" fill="#3d3d3a" text-anchor="middle">Arithmetic intensity (FLOP / byte, log scale)</text>
+<text x="20" y="260.0" font-size="13" fill="#3d3d3a" text-anchor="middle" transform="rotate(-90 20 260.0)">Achieved performance (GFLOP/s, log scale)</text>
+<line x1="78.0" y1="331.3" x2="690.0" y2="40.0" stroke="#767671" stroke-width="2" stroke-dasharray="5 4"/>
+<text x="684.0" y="32.0" font-size="11.5" fill="#3d3d3a" text-anchor="end">memory roof (12.8 GB/s)</text>
+<line x1="258.0" y1="40" x2="258.0" y2="480" stroke="#2a78d6" stroke-width="2" stroke-dasharray="1 4"/>
+<circle cx="258.0" cy="245.6" r="5" fill="#2a78d6" stroke="#ffffff" stroke-width="1.5"/>
+<text x="264.0" y="472" font-size="11.5" fill="#2a78d6" font-weight="700">ridge (measured), 0.29 FLOP/byte</text>
+<line x1="247.6" y1="40" x2="247.6" y2="480" stroke="#c98500" stroke-width="2" stroke-dasharray="1 4"/>
+<circle cx="247.6" cy="250.6" r="5" fill="#c98500" stroke="#ffffff" stroke-width="1.5"/>
+<text x="253.6" y="260.0" font-size="11.5" fill="#c98500" font-weight="700">ridge (fc warm), 0.26 FLOP/byte</text>
+<line x1="148.8" y1="40" x2="148.8" y2="480" stroke="#7c5cbf" stroke-width="2" stroke-dasharray="1 4"/>
+<circle cx="148.8" cy="297.6" r="5" fill="#7c5cbf" stroke="#ffffff" stroke-width="1.5"/>
+<text x="154.8" y="68" font-size="11.5" fill="#7c5cbf" font-weight="700">ridge (cold-cache), 0.10 FLOP/byte</text>
+<line x1="619.2" y1="40" x2="619.2" y2="480" stroke="#b9b8b1" stroke-width="1.5" stroke-dasharray="1 4"/>
+<circle cx="619.2" cy="73.7" r="5" fill="#b9b8b1" stroke="#ffffff" stroke-width="1.5"/>
+<text x="625.2" y="54" font-size="11" fill="#767671">ridge (idealized), 10 FLOP/byte</text>
+<line x1="78" y1="73.7" x2="690" y2="73.7" stroke="#b9b8b1" stroke-width="1.5" stroke-dasharray="2 5" opacity="0.8"/>
+<text x="698" y="77.7" font-size="11" fill="#767671">idealized 128 GFLOP/s</text>
+<line x1="78" y1="245.6" x2="690" y2="245.6" stroke="#2a78d6" stroke-width="2.5" stroke-dasharray="2 4"/>
+<text x="698" y="249.6" font-size="11.5" fill="#2a78d6" font-weight="700">3.723 GFLOP/s measured (warm)</text>
+<line x1="78" y1="250.6" x2="690" y2="250.6" stroke="#c98500" stroke-width="2" stroke-dasharray="2 4"/>
+<text x="698" y="266.6" font-size="11.5" fill="#c98500" font-weight="700">3.365 GFLOP/s measured (fc warm)</text>
+<line x1="78" y1="297.6" x2="690" y2="297.6" stroke="#7c5cbf" stroke-width="2.5"/>
+<text x="698" y="301.6" font-size="11.5" fill="#7c5cbf" font-weight="700">1.278 GFLOP/s measured (cold)</text>
+<circle cx="414.4" cy="388.7" r="7" fill="#c9433a" stroke="#ffffff" stroke-width="1.5" opacity="0.85"/>
+<circle cx="414.4" cy="295.7" r="7" fill="#1baf7a" stroke="#ffffff" stroke-width="1.5" opacity="0.85"/>
+<circle cx="432.4" cy="391.1" r="7" fill="#c9433a" stroke="#ffffff" stroke-width="1.5" opacity="0.85"/>
+<circle cx="432.4" cy="303.8" r="7" fill="#1baf7a" stroke="#ffffff" stroke-width="1.5" opacity="0.85"/>
+<circle cx="441.4" cy="390.9" r="7" fill="#c9433a" stroke="#ffffff" stroke-width="1.5" opacity="0.85"/>
+<circle cx="441.4" cy="301.9" r="7" fill="#1baf7a" stroke="#ffffff" stroke-width="1.5" opacity="0.85"/>
+<circle cx="450.4" cy="390.9" r="7" fill="#c9433a" stroke="#ffffff" stroke-width="1.5" opacity="0.85"/>
+<circle cx="450.4" cy="289.4" r="7" fill="#1baf7a" stroke="#ffffff" stroke-width="1.5" opacity="0.85"/>
+<circle cx="459.4" cy="395.0" r="7" fill="#c9433a" stroke="#ffffff" stroke-width="1.5" opacity="0.85"/>
+<circle cx="459.4" cy="326.8" r="7" fill="#1baf7a" stroke="#ffffff" stroke-width="1.5" opacity="0.85"/>
+<circle cx="468.4" cy="422.8" r="7" fill="#c9433a" stroke="#ffffff" stroke-width="1.5" opacity="0.85"/>
+<circle cx="468.4" cy="394.1" r="7" fill="#1baf7a" stroke="#ffffff" stroke-width="1.5" opacity="0.85"/>
+<circle cx="477.4" cy="390.9" r="7" fill="#c9433a" stroke="#ffffff" stroke-width="1.5" opacity="0.85"/>
+<circle cx="477.4" cy="302.0" r="7" fill="#1baf7a" stroke="#ffffff" stroke-width="1.5" opacity="0.85"/>
+<circle cx="486.4" cy="390.8" r="7" fill="#c9433a" stroke="#ffffff" stroke-width="1.5" opacity="0.85"/>
+<circle cx="486.4" cy="289.2" r="7" fill="#1baf7a" stroke="#ffffff" stroke-width="1.5" opacity="0.85"/>
+<circle cx="495.4" cy="390.5" r="7" fill="#c9433a" stroke="#ffffff" stroke-width="1.5" opacity="0.85"/>
+<circle cx="495.4" cy="302.2" r="7" fill="#1baf7a" stroke="#ffffff" stroke-width="1.5" opacity="0.85"/>
+<circle cx="423.4" cy="390.6" r="7" fill="#c9433a" stroke="#ffffff" stroke-width="1.5" opacity="0.85"/>
+<circle cx="423.4" cy="298.1" r="7" fill="#1baf7a" stroke="#ffffff" stroke-width="1.5" opacity="0.85"/>
+<rect x="78" y="535" width="12" height="12" rx="3" fill="#c9433a"/>
+<text x="95" y="545" font-size="12" fill="#3d3d3a">scalar</text>
+<rect x="169" y="535" width="12" height="12" rx="3" fill="#1baf7a"/>
+<text x="186" y="545" font-size="12" fill="#3d3d3a">vectorized</text>
+<line x1="292" y1="540" x2="312" y2="540" stroke="#767671" stroke-width="2" stroke-dasharray="4 3"/>
+<text x="318" y="545" font-size="12" fill="#3d3d3a">Memory roof</text>
+<circle cx="84.0" cy="566.0" r="7" fill="#767671" stroke="#ffffff" stroke-width="1.5" opacity="0.85"/>
+<text x="98" y="570" font-size="12" fill="#3d3d3a">FULLY_CONNECTED</text>
+<circle cx="246.0" cy="566.0" r="7" fill="#767671" stroke="#ffffff" stroke-width="1.5" opacity="0.85"/>
+<text x="260" y="570" font-size="12" fill="#3d3d3a">FULLY_CONNECTED</text>
+<circle cx="408.0" cy="566.0" r="7" fill="#767671" stroke="#ffffff" stroke-width="1.5" opacity="0.85"/>
+<text x="422" y="570" font-size="12" fill="#3d3d3a">FULLY_CONNECTED</text>
+<circle cx="570.0" cy="566.0" r="7" fill="#767671" stroke="#ffffff" stroke-width="1.5" opacity="0.85"/>
+<text x="584" y="570" font-size="12" fill="#3d3d3a">FULLY_CONNECTED</text>
+<circle cx="732.0" cy="566.0" r="7" fill="#767671" stroke="#ffffff" stroke-width="1.5" opacity="0.85"/>
+<text x="746" y="570" font-size="12" fill="#3d3d3a">FULLY_CONNECTED</text>
+<circle cx="894.0" cy="566.0" r="7" fill="#767671" stroke="#ffffff" stroke-width="1.5" opacity="0.85"/>
+<text x="908" y="570" font-size="12" fill="#3d3d3a">FULLY_CONNECTED</text>
+<circle cx="1056.0" cy="566.0" r="7" fill="#767671" stroke="#ffffff" stroke-width="1.5" opacity="0.85"/>
+<text x="1070" y="570" font-size="12" fill="#3d3d3a">FULLY_CONNECTED</text>
+<circle cx="1218.0" cy="566.0" r="7" fill="#767671" stroke="#ffffff" stroke-width="1.5" opacity="0.85"/>
+<text x="1232" y="570" font-size="12" fill="#3d3d3a">FULLY_CONNECTED</text>
+<circle cx="1380.0" cy="566.0" r="7" fill="#767671" stroke="#ffffff" stroke-width="1.5" opacity="0.85"/>
+<text x="1394" y="570" font-size="12" fill="#3d3d3a">FULLY_CONNECTED</text>
+<circle cx="1542.0" cy="566.0" r="7" fill="#767671" stroke="#ffffff" stroke-width="1.5" opacity="0.85"/>
+<text x="1556" y="570" font-size="12" fill="#3d3d3a">FULLY_CONNECTED</text>
+<text x="78" y="594" font-size="10.5" fill="#767671">Gray dashed lines: idealized 1-vector-MAC-instr/cycle ceiling (too optimistic). Blue dashed lines: warm-cache FU ceiling (int8dot_ceiling.c -- correct FU throughput, but data is never actually this cached).</text>
+<text x="78" y="610" font-size="10.5" fill="#767671">Amber dashed lines: fc_bottleneck.c warm-cache ceiling (FC_CACHE_MODE=0) -- same op/shape/pass-count as the purple cold-cache line, differing only in cache state. Purple solid line: cold-cache ceiling (FC_CACHE_MODE=1) -- the ceiling that actually applies here, since anomaly_detection_int8's single Invoke() call reads every weight tensor exactly once, never cached.</text>
+<text x="78" y="626" font-size="10.5" fill="#767671">Points nudged a few px apart within each arithmetic-intensity cluster for legibility -- every batch-1 FULLY_CONNECTED/LSTM call shares the exact same AI (2.00 FLOP/byte).</text>
+</svg>
