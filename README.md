@@ -49,7 +49,7 @@ commands/output for every target.
 
 ```
 tflm_riscv/
-├── tflite-micro/         git submodule → fork of tensorflow/tflite-micro,
+├── tflite-micro/       · Git submodule → fork of tensorflow/tflite-micro,
 │                         branch `gem5-riscv-integration` (the actual
 │                         TFLM-side changes: new/modified Makefile
 │                         targets, crt0, linker script, test-runner
@@ -58,37 +58,37 @@ tflm_riscv/
 │                         `examples/anomaly_detection/` is a symlink out
 │                         to `patterns/anomaly_detection/` below (see
 │                         "Patterns")
-├── patterns/             example patterns kept in the outer repo instead
+├── patterns/           · Example patterns kept in the outer repo instead
 │   ├── anomaly_detection/    of inside the submodule, symlinked into
 │   │                         tflite-micro's examples/ so its Makefile
 │   │                         still finds them — MLPerf Tiny's `ad01`
 │   │                         anomaly-detection autoencoder (10x
 │   │                         FULLY_CONNECTED, no conv/LSTM)
-│   └── microbenchmark/       standalone, TFLM-library-free C probes
+│   └── microbenchmark/     · Standalone, TFLM-library-free C probes
 │                             (`int8dot_ceiling.c`, `fc_bottleneck.c` +
 │                             two correctness-regression probes) that
 │                             measure this project's roofline ceilings
 │                             directly against `MinorCPU`'s `FloatSimd`
 │                             unit — own Makefile, no `make
 │                             third_party_downloads` needed
-├── sim_config/           gem5 board configs (Python) + whisper config
+├── sim_config/         · Gem5 board configs (Python) + whisper config
 │                         (JSON) — kept outside the tflite-micro tree
 │                         since these aren't TFLM source, they're
 │                         simulator environment config
-├── script/               local dev-environment setup (toolchain/gem5/
+├── script/             · Local dev-environment setup (toolchain/gem5/
 │                         whisper paths, run/benchmark helper scripts,
 │                         roofline tooling — see "Running" below)
 └── doc/
-    ├── gem5_integration.md    the full writeup (design decisions, bugs
+    ├── gem5_integration.md  · The full writeup (design decisions, bugs
     │                          found/fixed, known limitations)
-    ├── performance.md         consolidated whole-run numbers across
+    ├── performance.md       · Consolidated whole-run numbers across
     │                          every benchmark/target in the project
-    ├── dtln/                  performance_dtln.md (per-op cycle counts,
+    ├── dtln/                · performance_dtln.md (per-op cycle counts,
     │                          vectorized-kernel results, roofline
     │                          analysis) + its generated roofline SVG/log
-    ├── anomaly_detection/      same, for the anomaly_detection pattern,
+    ├── anomaly_detection/    · Same, for the anomaly_detection pattern,
     │                          plus work_note_mlperf_tiny.md
-    └── microbenchmark/         shared reference: build settings, test
+    └── microbenchmark/       · Shared reference: build settings, test
                                config, and results for the probes in
                                patterns/microbenchmark/, so other
                                patterns can build their own ceiling
